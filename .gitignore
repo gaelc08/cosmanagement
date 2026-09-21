@@ -1,5 +1,6 @@
 config.json
 secrets.json
+.env
 *.pem
 ctie-hive-*
 ctie-hive-*.json

@@ -14,9 +14,10 @@ It includes:
 Usage:
 ------
 1. Configure `config.json` (structure/quotas/firewall) using config.example.json as a template.
-2. Provide the API auth token via the HIVE_AUTH_TOKEN environment variable
-   (e.g. `export HIVE_AUTH_TOKEN="Basic <base64 user:pass>"`), or via a local,
-   gitignored secrets.json (see load_auth_header()).
+2. Provide credentials via a local, gitignored `.env` file (HIVE_USERNAME /
+   HIVE_PASSWORD, or a pre-encoded HIVE_AUTH_TOKEN), via those same
+   environment variables directly, or via a local, gitignored secrets.json
+   (see load_auth_header()).
 3. Run the script with the desired action:
    - Full flow:              python hive_management.py --action create_all
    - Storage accounts only:  python hive_management.py --action create_sa
@@ -26,11 +27,14 @@ Usage:
    - List all Hive buckets:  python hive_management.py --action list_buckets
 """
 
-import requests
-import json
 import argparse
-import sys
+import base64
+import json
 import os
+import sys
+
+import requests
+from dotenv import load_dotenv
 
 DEFAULT_HEADERS = {
     'Accept': '*/*',
@@ -53,14 +57,30 @@ def load_config(path='config.json'):
         sys.exit(1)
 
 
+def _basic_auth_header(username, password):
+    token = base64.b64encode(f"{username}:{password}".encode('utf-8')).decode('ascii')
+    return f"Basic {token}"
+
+
 def load_auth_header():
     """
     Resolve the Authorization header without ever storing it in config.json.
 
-    Order of precedence:
-    1. HIVE_AUTH_TOKEN environment variable (e.g. "Basic xxxxxxxx==")
-    2. A local, gitignored secrets.json: {"authorization": "Basic xxxxxxxx=="}
+    Order of precedence (each source can come from a gitignored `.env`
+    file, loaded via load_dotenv() in main(), or from the real
+    environment):
+    1. HIVE_USERNAME + HIVE_PASSWORD environment variables -- the header
+       is computed here in Python, so passwords with shell-special
+       characters (`$`, `=`, `&`, ...) never need manual escaping.
+    2. HIVE_AUTH_TOKEN environment variable, already-encoded (e.g. "Basic xxxxxxxx==")
+    3. A local, gitignored secrets.json: {"username": ..., "password": ...}
+       or {"authorization": "Basic xxxxxxxx=="}
     """
+    username = os.environ.get('HIVE_USERNAME')
+    password = os.environ.get('HIVE_PASSWORD')
+    if username and password:
+        return _basic_auth_header(username, password)
+
     env_token = os.environ.get('HIVE_AUTH_TOKEN')
     if env_token:
         return env_token
@@ -68,6 +88,8 @@ def load_auth_header():
     try:
         with open('secrets.json', 'r') as f:
             secrets = json.load(f)
+        if secrets.get('username') and secrets.get('password'):
+            return _basic_auth_header(secrets['username'], secrets['password'])
         token = secrets.get('authorization')
         if token:
             return token
@@ -78,9 +100,10 @@ def load_auth_header():
         sys.exit(1)
 
     print(
-        "Error: no auth token found.\n"
-        "Set HIVE_AUTH_TOKEN env var, or create a local secrets.json "
-        '(gitignored) with {"authorization": "Basic <base64 user:pass>"}.'
+        "Error: no credentials found.\n"
+        "Set HIVE_USERNAME + HIVE_PASSWORD (in a .env file or the environment), "
+        "or HIVE_AUTH_TOKEN, or create a local secrets.json (gitignored) with "
+        '{"username": "...", "password": "..."} or {"authorization": "Basic <base64 user:pass>"}.'
     )
     sys.exit(1)
 
@@ -436,6 +459,11 @@ def main():
     )
     parser.add_argument('--config', type=str, default='config.json', help='Path to config.json')
     parser.add_argument(
+        '--env-file', type=str, default='.env',
+        help='Path to a .env file with HIVE_USERNAME/HIVE_PASSWORD (or HIVE_AUTH_TOKEN). '
+             'Default: .env in the current directory; silently skipped if absent.',
+    )
+    parser.add_argument(
         '--account-prefix', type=str, default='sa-ctie-hive-',
         help="Account id prefix used by 'list_buckets' to select Hive accounts (default: sa-ctie-hive-)",
     )
@@ -444,6 +472,10 @@ def main():
         help="Optional path to write 'list_buckets' results as JSON ({account_id: [bucket, ...]})",
     )
     args = parser.parse_args()
+
+    # override=True: a variable already exported in the shell (e.g. from
+    # earlier manual testing) must not shadow a since-corrected .env value.
+    load_dotenv(args.env_file, override=True)
 
     config = load_config(args.config)
 

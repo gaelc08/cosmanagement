@@ -12,10 +12,29 @@ This script provides modular functions to manage IBM Cloud Object Storage (COS) 
 
 ## Prerequisites
 - Python 3.x
-- `requests` library installed (`pip install requests`)
+- Dependencies installed (`pip install -r requirements.txt`)
 - Access to the IBM COS API with appropriate permissions
-- Valid authorization token for the IBM COS API
+- Valid credentials for the IBM COS API
 - SSL Certificate (if the API uses a self-signed or custom certificate)
+
+## Credentials
+Credentials are never stored in `config.json`. `load_auth_header()` resolves them in this order:
+
+1. **`HIVE_USERNAME` + `HIVE_PASSWORD`** (recommended) -- put them in a local, gitignored `.env` file:
+   ```
+   HIVE_USERNAME=storageadmin
+   HIVE_PASSWORD=your-password-here
+   ```
+   The Basic auth header is computed in Python from these, so passwords with shell-special
+   characters (`$`, `=`, `&`, `#`, ...) never need manual escaping or base64-encoding by hand.
+2. **`HIVE_AUTH_TOKEN`** -- an already base64-encoded `Basic <base64 user:pass>` string, if you
+   prefer to manage the encoding yourself.
+3. **A local, gitignored `secrets.json`**: `{"username": "...", "password": "..."}` or
+   `{"authorization": "Basic <base64 user:pass>"}`.
+
+`.env` is loaded automatically on every run (via `--env-file`, default `.env` in the current
+directory; silently skipped if absent), with `override=True` -- so a corrected `.env` value always
+wins over a stale variable left exported in your shell from earlier manual testing.
 
 ## Configuration
 The script uses a `config.json` file to store all configurations. Modify this file to define:
@@ -46,9 +65,9 @@ If the IBM COS API uses a self-signed or custom certificate, you need to:
 1. Clone the repository or download the script.
 2. Install the required dependencies:
    ```bash
-   pip install requests
+   pip install -r requirements.txt
    ```
-3. Update the `config.json` file with your settings.
+3. Update the `config.json` file with your settings, and set up credentials (see Credentials above).
 4. Run the script with the desired action:
    - To create storage accounts, buckets, and credentials:
      ```bash
