@@ -318,8 +318,14 @@ def list_accounts(config, prefix=None):
                 print(f"Error parsing accounts list: {err}")
                 return accounts
 
+            if marker is None:
+                print(f"DEBUG /accounts raw response (truncated): {json.dumps(page)[:300]}")
+
             if not page:
                 break
+            if isinstance(page, dict):
+                print(f"Error: /accounts returned an object, not a list: {json.dumps(page)[:300]}")
+                return accounts
             for entry in page:
                 account_id = entry.get('id') if isinstance(entry, dict) else entry
                 if account_id:
@@ -329,8 +335,12 @@ def list_accounts(config, prefix=None):
             last = page[-1]
             marker = last.get('id') if isinstance(last, dict) else last
 
+    raw_count = len(accounts)
     if prefix:
         accounts = [a for a in accounts if a['id'].startswith(prefix)]
+        print(f"Fetched {raw_count} account(s) from the API, {len(accounts)} matched prefix '{prefix}'.")
+    else:
+        print(f"Fetched {raw_count} account(s) from the API.")
     return accounts
 
 
