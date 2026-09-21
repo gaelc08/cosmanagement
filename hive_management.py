@@ -277,17 +277,65 @@ def get_credentials(config):
             print(f"Wrote {out_file}")
 
 
-def list_accounts(config, prefix=None):
-    """List storage accounts on the API (paginated), optionally filtered
-    client-side by id prefix (e.g. "sa-ctie-hive-" to keep only Hive
-    accounts out of every account on the cluster).
+def _fetch_paginated_entries(session, base_url, headers, ssl_verify, wrap_key, marker_key, error_label):
+    """GET a paginated collection endpoint and return its raw entries.
 
-    The API has been observed wrapping the array in an object
-    (``{"accounts": [...]}``) rather than returning a bare array, and
-    with entries that are either plain id strings (e.g.
-    "sa-ctie-hive-prd-0001") or {"id": ...} objects; all of that is
-    normalized here into a flat list of {"id": ...} dicts so callers
-    always get a consistent shape.
+    The API has been observed wrapping the array under a key (e.g.
+    ``{"accounts": [...], "is_truncated": ..., "limit": ...}`` or
+    ``{"containers": [...], "is_truncated": ..., "limit": ...}``) rather
+    than returning a bare array -- ``wrap_key`` names that key. Entries
+    themselves may be plain strings or dicts; callers normalize those.
+    Pagination prefers the response's own ``is_truncated`` flag and
+    falls back to a short-page heuristic when that field is absent.
+    """
+    entries = []
+    marker = None
+    while True:
+        params = {'limit': 1000}
+        if marker:
+            params['marker'] = marker
+        try:
+            response = session.get(base_url, params=params, headers=headers, verify=ssl_verify, timeout=30)
+        except requests.RequestException as err:
+            print(f"Network error {error_label}: {err}")
+            return entries
+
+        if response.status_code == 204:
+            break
+        if response.status_code != 200:
+            print(f"Error {error_label}: {response.status_code} - {response.text}")
+            return entries
+
+        try:
+            page = response.json()
+        except json.JSONDecodeError as err:
+            print(f"Error parsing response while {error_label}: {err}")
+            return entries
+
+        is_truncated = None
+        if isinstance(page, dict):
+            is_truncated = page.get('is_truncated')
+            page = page.get(wrap_key, [])
+
+        if not page:
+            break
+        entries.extend(page)
+
+        if is_truncated is False:
+            break
+        if is_truncated is None and len(page) < 1000:
+            break
+
+        last = page[-1]
+        marker = last.get(marker_key) if isinstance(last, dict) else last
+
+    return entries
+
+
+def list_accounts(config, prefix=None):
+    """List storage accounts on the API, optionally filtered client-side
+    by id prefix (e.g. "sa-ctie-hive-" to keep only Hive accounts out of
+    every account on the cluster).
 
     Returns a list of {"id": str} dicts.
     """
@@ -295,44 +343,16 @@ def list_accounts(config, prefix=None):
     ssl_verify = get_ssl_verify(config)
     headers = build_headers(config)
 
-    accounts = []
-    marker = None
     with requests.Session() as s:
-        while True:
-            params = {'limit': 1000}
-            if marker:
-                params['marker'] = marker
-            try:
-                response = s.get(base_url, params=params, headers=headers, verify=ssl_verify, timeout=30)
-            except requests.RequestException as err:
-                print(f"Network error listing accounts: {err}")
-                return accounts
+        raw_entries = _fetch_paginated_entries(
+            s, base_url, headers, ssl_verify, wrap_key='accounts', marker_key='id', error_label='listing accounts',
+        )
 
-            if response.status_code == 204:
-                break
-            if response.status_code != 200:
-                print(f"Error listing accounts: {response.status_code} - {response.text}")
-                return accounts
-
-            try:
-                page = response.json()
-            except json.JSONDecodeError as err:
-                print(f"Error parsing accounts list: {err}")
-                return accounts
-
-            if isinstance(page, dict):
-                page = page.get('accounts', [])
-
-            if not page:
-                break
-            for entry in page:
-                account_id = entry.get('id') if isinstance(entry, dict) else entry
-                if account_id:
-                    accounts.append({'id': account_id})
-            if len(page) < 1000:
-                break
-            last = page[-1]
-            marker = last.get('id') if isinstance(last, dict) else last
+    accounts = []
+    for entry in raw_entries:
+        account_id = entry.get('id') if isinstance(entry, dict) else entry
+        if account_id:
+            accounts.append({'id': account_id})
 
     raw_count = len(accounts)
     if prefix:
@@ -344,7 +364,7 @@ def list_accounts(config, prefix=None):
 
 
 def list_bucket_names(config, account_id):
-    """List container/bucket names under one storage account (paginated).
+    """List container/bucket names under one storage account.
 
     Per the API guide (Chapter 10, "Container / bucket listing"), this is
     a resource-intensive operation on the system -- fine to run on demand
@@ -356,43 +376,17 @@ def list_bucket_names(config, account_id):
     headers = build_headers(config)
     headers['Accept'] = 'application/json'
 
-    names = []
-    marker = None
     with requests.Session() as s:
-        while True:
-            params = {'limit': 1000}
-            if marker:
-                params['marker'] = marker
-            try:
-                response = s.get(base_url, params=params, headers=headers, verify=ssl_verify, timeout=30)
-            except requests.RequestException as err:
-                print(f"Network error listing buckets for {account_id}: {err}")
-                return names
+        raw_entries = _fetch_paginated_entries(
+            s, base_url, headers, ssl_verify, wrap_key='containers', marker_key='name',
+            error_label=f"listing buckets for {account_id}",
+        )
 
-            if response.status_code == 204:
-                # No containers under this account.
-                break
-            if response.status_code != 200:
-                print(f"Error listing buckets for {account_id}: {response.status_code} - {response.text}")
-                return names
-
-            try:
-                page = response.json()
-            except json.JSONDecodeError as err:
-                print(f"Error parsing bucket list for {account_id}: {err}")
-                return names
-
-            if not page:
-                break
-            for entry in page:
-                name = entry.get('name') if isinstance(entry, dict) else entry
-                if name:
-                    names.append(name)
-            if len(page) < 1000:
-                break
-            last = page[-1]
-            marker = last.get('name') if isinstance(last, dict) else last
-
+    names = []
+    for entry in raw_entries:
+        name = entry.get('name') if isinstance(entry, dict) else entry
+        if name:
+            names.append(name)
     return names
 
 
