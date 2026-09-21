@@ -282,10 +282,12 @@ def list_accounts(config, prefix=None):
     client-side by id prefix (e.g. "sa-ctie-hive-" to keep only Hive
     accounts out of every account on the cluster).
 
-    The API has been observed returning either a list of plain id
-    strings (e.g. "sa-ctie-hive-prd-0001") or a list of {"id": ...}
-    objects depending on the request; both are normalized here into
-    {"id": ...} dicts so callers always get a consistent shape.
+    The API has been observed wrapping the array in an object
+    (``{"accounts": [...]}``) rather than returning a bare array, and
+    with entries that are either plain id strings (e.g.
+    "sa-ctie-hive-prd-0001") or {"id": ...} objects; all of that is
+    normalized here into a flat list of {"id": ...} dicts so callers
+    always get a consistent shape.
 
     Returns a list of {"id": str} dicts.
     """
@@ -318,14 +320,11 @@ def list_accounts(config, prefix=None):
                 print(f"Error parsing accounts list: {err}")
                 return accounts
 
-            if marker is None:
-                print(f"DEBUG /accounts raw response (truncated): {json.dumps(page)[:300]}")
+            if isinstance(page, dict):
+                page = page.get('accounts', [])
 
             if not page:
                 break
-            if isinstance(page, dict):
-                print(f"Error: /accounts returned an object, not a list: {json.dumps(page)[:300]}")
-                return accounts
             for entry in page:
                 account_id = entry.get('id') if isinstance(entry, dict) else entry
                 if account_id:
