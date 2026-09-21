@@ -281,6 +281,13 @@ def list_accounts(config, prefix=None):
     """List storage accounts on the API (paginated), optionally filtered
     client-side by id prefix (e.g. "sa-ctie-hive-" to keep only Hive
     accounts out of every account on the cluster).
+
+    The API has been observed returning either a list of plain id
+    strings (e.g. "sa-ctie-hive-prd-0001") or a list of {"id": ...}
+    objects depending on the request; both are normalized here into
+    {"id": ...} dicts so callers always get a consistent shape.
+
+    Returns a list of {"id": str} dicts.
     """
     base_url = f"{config['api']['base_url']}/accounts"
     ssl_verify = get_ssl_verify(config)
@@ -313,13 +320,17 @@ def list_accounts(config, prefix=None):
 
             if not page:
                 break
-            accounts.extend(page)
+            for entry in page:
+                account_id = entry.get('id') if isinstance(entry, dict) else entry
+                if account_id:
+                    accounts.append({'id': account_id})
             if len(page) < 1000:
                 break
-            marker = page[-1].get('id')
+            last = page[-1]
+            marker = last.get('id') if isinstance(last, dict) else last
 
     if prefix:
-        accounts = [a for a in accounts if a.get('id', '').startswith(prefix)]
+        accounts = [a for a in accounts if a['id'].startswith(prefix)]
     return accounts
 
 
