@@ -69,30 +69,37 @@ def load_auth_header():
     Order of precedence (each source can come from a gitignored `.env`
     file, loaded via load_dotenv() in main(), or from the real
     environment):
-    1. HIVE_USERNAME + HIVE_PASSWORD environment variables -- the header
+    1. HIVE_AUTH_TOKEN environment variable, already-encoded (e.g. "Basic xxxxxxxx==").
+       Preferred whenever the exact byte sequence matters (e.g. a
+       password containing non-printable characters that a plain-text
+       .env value can't safely represent) -- paste the known-good
+       base64 token directly rather than trying to reconstruct it from
+       HIVE_USERNAME/HIVE_PASSWORD.
+    2. HIVE_USERNAME + HIVE_PASSWORD environment variables -- the header
        is computed here in Python, so passwords with shell-special
-       characters (`$`, `=`, `&`, ...) never need manual escaping.
-    2. HIVE_AUTH_TOKEN environment variable, already-encoded (e.g. "Basic xxxxxxxx==")
+       characters (`$`, `=`, `&`, ...) never need manual escaping. Only
+       use this when HIVE_AUTH_TOKEN is not set, since the two would
+       otherwise silently conflict.
     3. A local, gitignored secrets.json: {"username": ..., "password": ...}
        or {"authorization": "Basic xxxxxxxx=="}
     """
+    env_token = os.environ.get('HIVE_AUTH_TOKEN')
+    if env_token:
+        return env_token
+
     username = os.environ.get('HIVE_USERNAME')
     password = os.environ.get('HIVE_PASSWORD')
     if username and password:
         return _basic_auth_header(username, password)
 
-    env_token = os.environ.get('HIVE_AUTH_TOKEN')
-    if env_token:
-        return env_token
-
     try:
         with open('secrets.json', 'r') as f:
             secrets = json.load(f)
-        if secrets.get('username') and secrets.get('password'):
-            return _basic_auth_header(secrets['username'], secrets['password'])
         token = secrets.get('authorization')
         if token:
             return token
+        if secrets.get('username') and secrets.get('password'):
+            return _basic_auth_header(secrets['username'], secrets['password'])
     except FileNotFoundError:
         pass
     except json.JSONDecodeError as err:

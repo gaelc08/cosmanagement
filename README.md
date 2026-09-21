@@ -20,17 +20,28 @@ This script provides modular functions to manage IBM Cloud Object Storage (COS) 
 ## Credentials
 Credentials are never stored in `config.json`. `load_auth_header()` resolves them in this order:
 
-1. **`HIVE_USERNAME` + `HIVE_PASSWORD`** (recommended) -- put them in a local, gitignored `.env` file:
+1. **`HIVE_AUTH_TOKEN`** -- an already base64-encoded `Basic <base64 user:pass>` string, e.g. in
+   a local, gitignored `.env` file:
+   ```
+   HIVE_AUTH_TOKEN=Basic c3RvcmFnZWFkbWluOnlvdXItcGFzc3dvcmQ=
+   ```
+   Use this when you already have a known-good token (e.g. from a working `curl`/`base64` test),
+   or when the exact byte sequence matters and can't be safely retyped as plain text (some
+   accounts' passwords were provisioned with a trailing/embedded control character, e.g. from an
+   `echo` without `-n` at creation time -- reconstructing the header from the visible characters
+   alone then produces a *different*, invalid token).
+2. **`HIVE_USERNAME` + `HIVE_PASSWORD`** -- put them in `.env` instead if you don't already have a
+   working token:
    ```
    HIVE_USERNAME=storageadmin
    HIVE_PASSWORD=your-password-here
    ```
    The Basic auth header is computed in Python from these, so passwords with shell-special
-   characters (`$`, `=`, `&`, `#`, ...) never need manual escaping or base64-encoding by hand.
-2. **`HIVE_AUTH_TOKEN`** -- an already base64-encoded `Basic <base64 user:pass>` string, if you
-   prefer to manage the encoding yourself.
-3. **A local, gitignored `secrets.json`**: `{"username": "...", "password": "..."}` or
-   `{"authorization": "Basic <base64 user:pass>"}`.
+   characters (`$`, `=`, `&`, `#`, ...) never need manual escaping. Don't set this alongside
+   `HIVE_AUTH_TOKEN` -- the token always wins, so a stale password here would just be ignored
+   silently rather than causing confusing auth failures.
+3. **A local, gitignored `secrets.json`**: `{"authorization": "Basic <base64 user:pass>"}` or
+   `{"username": "...", "password": "..."}`.
 
 `.env` is loaded automatically on every run (via `--env-file`, default `.env` in the current
 directory; silently skipped if absent), with `override=True` -- so a corrected `.env` value always
