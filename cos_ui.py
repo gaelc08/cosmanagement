@@ -392,17 +392,20 @@ PAGE = r"""<!doctype html>
     const ips = findKey(details, 'allowed_ip');
     const location = findKey(details, 'storage_location');
     if (!ok) box.append(el('div', 'Détails illisibles : remplis seulement ce que tu veux changer.', 'empty'));
-    else box.append(el('div', 'Seuls les champs renseignés sont envoyés.', 'empty'));
+    else box.append(el('div', 'Seuls les champs modifiés sont envoyés.', 'empty'));
 
     const form = el('form', undefined, 'grid-form');
     form.autocomplete = 'off';
     const fQuota = el('input'); fQuota.type = 'text'; fQuota.inputMode = 'numeric';
     fQuota.value = typeof quota === 'number' ? String(Math.round(quota / 1e9 * 100) / 100) : '';
-    const fLoc = el('input'); fLoc.type = 'text'; fLoc.value = typeof location === 'string' ? location : '';
+    // GET returns the storage location as an internal id, which PUT rejects: show it, never prefill it.
+    const fLoc = el('input'); fLoc.type = 'text';
+    fLoc.placeholder = (typeof location === 'string' ? 'actuelle : ' + location + ' - ' : '') + 'laisser vide pour ne pas changer';
     const fIps = el('textarea'); fIps.rows = 4; fIps.value = Array.isArray(ips) ? ips.join('\n') : '';
     for (const [label, field] of [['Quota (Go)', fQuota], ['Storage location', fLoc], ['IP autorisées', fIps]]) {
       form.append(el('label', label), field);
     }
+    const initial = {quota: fQuota.value, loc: fLoc.value, ips: fIps.value};
     const buttons = el('div', undefined, 'buttons');
     const save = el('button', 'Enregistrer'); save.type = 'submit';
     const cancel = el('button', 'Annuler', 'secondary'); cancel.type = 'button';
@@ -411,7 +414,19 @@ PAGE = r"""<!doctype html>
     form.append(buttons);
     form.addEventListener('submit', async e => {
       e.preventDefault();
-      const body = {account, bucket, quota_gb: fQuota.value.trim(), storage_location: fLoc.value.trim(), allowed_ips: fIps.value};
+      // Send only what was changed: the prefilled quota may not be a whole number of GB.
+      const ipList = v => v.split(/[\s,;]+/).filter(Boolean).join(',');
+      const changed = (now, before) => now.trim() !== before.trim();
+      const body = {
+        account, bucket,
+        quota_gb: changed(fQuota.value, initial.quota) ? fQuota.value.trim() : '',
+        storage_location: changed(fLoc.value, initial.loc) ? fLoc.value.trim() : '',
+        allowed_ips: ipList(fIps.value) !== ipList(initial.ips) ? fIps.value : '',
+      };
+      if (!body.quota_gb && !body.storage_location && !body.allowed_ips) {
+        setStatus('Aucune modification à envoyer.', false);
+        return;
+      }
       const ipCount = body.allowed_ips.split(/[\s,;]+/).filter(Boolean).length;
       const summary = 'Modifier le bucket "' + bucket + '"\n' +
         '  quota : ' + (body.quota_gb || '(inchangé)') + (body.quota_gb ? ' Go' : '') + '\n' +
