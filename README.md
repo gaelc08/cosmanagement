@@ -97,6 +97,14 @@ If the IBM COS API uses a self-signed or custom certificate, you need to:
      buckets to stdout. Add `--output buckets.json` to also write the
      result as `{"account-id": ["bucket1", "bucket2", ...]}`.
 
+### Bucket finder (web UI)
+A small local interface to look up the buckets of every storage account whose id starts with `sa-<tenant>-`:
+```bash
+python bucket_finder.py            # opens http://127.0.0.1:8765
+python bucket_finder.py --port 9000 --no-browser
+```
+Type the tenant, press **Rechercher**, then narrow the result with the bucket filter or copy the visible bucket names. It uses the same `config.json` and credentials as `hive_management.py`, only listens on `127.0.0.1` and only performs read-only listing calls. Errors reported by the API (bad credentials, unreachable host, SSL) are shown under "Détails de l'appel API". As with `list_buckets`, listing buckets is resource-intensive on the API side: one call per account, only when a search is started.
+
 ## Output
 - **Credentials Files**: The script generates credential files for each bucket in the format `ctie-hive-<bucket_name>` or `ctie-hive-<bucket_name>.json`. Each file contains the access key ID and secret key for the respective environments.
 - **Bucket Listing**: With `--action list_buckets`, a summary is printed for each Hive account, and optionally written as JSON via `--output`.
