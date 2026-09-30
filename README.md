@@ -97,13 +97,19 @@ If the IBM COS API uses a self-signed or custom certificate, you need to:
      buckets to stdout. Add `--output buckets.json` to also write the
      result as `{"account-id": ["bucket1", "bucket2", ...]}`.
 
-### Bucket finder (web UI)
-A small local interface to look up the buckets of every storage account whose id starts with `sa-<tenant>-`:
+### Web UI (`bucket_finder.py`)
+A local web interface for everything the command line does, plus a tenant search:
 ```bash
 python bucket_finder.py            # opens http://127.0.0.1:8765
 python bucket_finder.py --port 9000 --no-browser
 ```
-Type the tenant, press **Rechercher**, then narrow the result with the bucket filter or copy the visible bucket names. It uses the same `config.json` and credentials as `hive_management.py`, only listens on `127.0.0.1` and only performs read-only listing calls. Once accounts are found, **Créer un bucket** opens a form to create a bucket in one of them (`PUT /container/<name>`, same payload as `create_buckets`): account, exact bucket name, quota in GB, storage location, allowed IPs (one per line or comma-separated, CIDR accepted) and an optional `x-Account-Meta-name` header value. Nothing is deduced from `config.json`; every value is typed in, validated server-side, and shown in a confirmation dialog before the call is sent. The bucket list refreshes after a successful creation. Errors reported by the API (bad credentials, unreachable host, SSL) are shown under "Détails de l'appel API". As with `list_buckets`, listing buckets is resource-intensive on the API side: one call per account, only when a search is started.
+It uses the same `config.json` and credentials as `hive_management.py` and only listens on `127.0.0.1`.
+
+- **Recherche**: type a tenant to list the buckets of every account starting with `sa-<tenant>-` (filter box, copy button). Each account has **Récupérer les credentials** (`get_creds` for one account) and **Générer de nouvelles credentials** (`create_creds`, asks for confirmation). Listing is resource-intensive on the API side (one call per account), so it only runs when a search is started.
+- **Créer**: create one storage account (`PUT /accounts/<id>`) or one bucket (`PUT /container/<name>`, same payload as `create_buckets`) from typed-in values: account, exact bucket name, quota in GB, storage location, allowed IPs (one per line or comma-separated, CIDR accepted) and an optional `x-Account-Meta-name` value. Nothing is deduced from `config.json`. Every value is validated server-side and shown in a confirmation dialog before the call is sent.
+- **En masse (config.json)**: what `create_sa`, `create_buckets`, `create_creds` / `get_creds` (and so `create_all`) do, with the environments and steps of your choice. **Prévisualiser** lists exactly what will be sent, **Exécuter le plan** runs it and shows one result per operation. Selecting `prd` asks you to type `prd` first.
+
+Credentials (access/secret keys) are shown in the page, secret masked until revealed, with copy buttons, and are never written to disk by the UI (unlike `create_creds`/`get_creds` on the command line). Errors reported by the API (bad credentials, unreachable host, SSL) are shown under "Détails de l'appel API". Write requests are only accepted as same-origin JSON `POST`s.
 
 ## Output
 - **Credentials Files**: The script generates credential files for each bucket in the format `ctie-hive-<bucket_name>` or `ctie-hive-<bucket_name>.json`. Each file contains the access key ID and secret key for the respective environments.

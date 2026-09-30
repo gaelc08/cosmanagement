@@ -132,67 +132,115 @@ def get_ssl_verify(config):
     return True
 
 
+def _selected_envs(config, environments=None):
+    """config's environments, in config order, optionally narrowed to `environments`."""
+    if environments is None:
+        return list(config['environments'])
+    return [env for env in config['environments'] if env in environments]
+
+
+def plan_storage_accounts(config, environments=None):
+    """Storage accounts config.json calls for: [{env, account_id, account_meta_name}].
+
+    One entry per account id (two config buckets sharing an `sa` need it once).
+    """
+    items, seen = [], set()
+    for env in _selected_envs(config, environments):
+        for bucket in config['buckets']:
+            account_id = f'sa-ctie-hive-{env}-{bucket["sa"]}'
+            if account_id in seen:
+                continue
+            seen.add(account_id)
+            items.append({
+                'env': env,
+                'account_id': account_id,
+                'account_meta_name': f'ctie-hive-{env}',
+            })
+    return items
+
+
+def plan_buckets(config, environments=None):
+    """Buckets config.json calls for. Returns (items, errors).
+
+    Each item has the keyword arguments of create_bucket() plus `env`;
+    `errors` holds a message for every bucket/env that config.json can't fully
+    describe (missing quota, storage location or firewall rules).
+    """
+    items, errors = [], []
+    for env in _selected_envs(config, environments):
+        for bucket in config['buckets']:
+            quota_key = f'quota-{env}'
+            if quota_key not in bucket:
+                errors.append(f"Error: quota for env '{env}' not defined for bucket '{bucket['bucket']}'.")
+                continue
+            location = config['storage_locations'].get(env)
+            allowed_ips = config['firewall_rules'].get(env)
+            if location is None or allowed_ips is None:
+                errors.append(f"Error: storage location or firewall rules for env '{env}' not defined.")
+                continue
+            items.append({
+                'env': env,
+                'account_id': f'sa-ctie-hive-{env}-{bucket["sa"]}',
+                'bucket_name': f'ctie-hive-{env}-{bucket["bucket"]}',
+                'quota_gb': bucket[quota_key],
+                'storage_location': location,
+                'allowed_ips': allowed_ips,
+                'account_meta_name': f'ctie-hive-{env}',
+            })
+    return items, errors
+
+
+def plan_credentials(config, environments=None):
+    """Accounts credentials are requested for: [{env, account_id}], one per account."""
+    return [
+        {'env': item['env'], 'account_id': item['account_id']}
+        for item in plan_storage_accounts(config, environments)
+    ]
+
+
+def create_storage_account(config, account_id, account_meta_name=None):
+    """Create one storage account (PUT /accounts/<id>).
+
+    Returns (status_code, response_text); network failures are raised as
+    requests.RequestException.
+    """
+    headers = build_headers(config)
+    if account_meta_name:
+        headers['x-Account-Meta-name'] = account_meta_name
+    url = f"{config['api']['base_url']}/accounts/{account_id}"
+    with requests.Session() as s:
+        response = s.put(url, headers=headers, data={}, verify=get_ssl_verify(config), timeout=30)
+    return response.status_code, response.text
+
+
 def create_storage_accounts(config):
     """Create storage accounts for each environment."""
-    base_sa_url = f"{config['api']['base_url']}/accounts/"
-    buckets = config['buckets']
-    environments = config['environments']
-    ssl_verify = get_ssl_verify(config)
-
-    with requests.Session() as s:
-        for env in environments:
-            headers = build_headers(config)
-            headers['x-Account-Meta-name'] = f'ctie-hive-{env}'
-            for bucket in buckets:
-                sa_name = f'sa-ctie-hive-{env}-{bucket["sa"]}'
-                url = f"{base_sa_url}{sa_name}"
-                try:
-                    response = s.put(url, headers=headers, data={}, verify=ssl_verify, timeout=30)
-                except requests.RequestException as err:
-                    print(f"Network error creating storage account {sa_name}: {err}")
-                    continue
-                if response.status_code != 201:
-                    print(f"Error creating storage account {sa_name}: {response.status_code} - {response.text}")
+    for item in plan_storage_accounts(config):
+        sa_name = item['account_id']
+        try:
+            status, text = create_storage_account(config, sa_name, item['account_meta_name'])
+        except requests.RequestException as err:
+            print(f"Network error creating storage account {sa_name}: {err}")
+            continue
+        if status != 201:
+            print(f"Error creating storage account {sa_name}: {status} - {text}")
 
 
 def create_buckets(config):
     """Create buckets with quotas and firewall rules."""
-    base_bucket_url = f"{config['api']['base_url']}/container/"
-    buckets = config['buckets']
-    environments = config['environments']
-    storage_locations = config['storage_locations']
-    firewall_rules = config['firewall_rules']
-    ssl_verify = get_ssl_verify(config)
-
-    with requests.Session() as s:
-        for env in environments:
-            headers = build_headers(config)
-            headers['x-Account-Meta-name'] = f'ctie-hive-{env}'
-            for bucket in buckets:
-                quota_key = f'quota-{env}'
-                if quota_key not in bucket:
-                    print(f"Error: quota for env '{env}' not defined for bucket '{bucket['bucket']}'.")
-                    continue
-
-                bucket_payload = {
-                    "hard_quota": bucket[quota_key] * 1000000000,
-                    "firewall": {"allowed_ip": firewall_rules[env]},
-                    "storage_location": storage_locations[env],
-                    "service_instance": f'sa-ctie-hive-{env}-{bucket["sa"]}',
-                }
-
-                bucket_name = f'ctie-hive-{env}-{bucket["bucket"]}'
-                url = f"{base_bucket_url}{bucket_name}"
-                try:
-                    response = s.put(
-                        url, headers=headers, data=json.dumps(bucket_payload),
-                        verify=ssl_verify, timeout=30,
-                    )
-                except requests.RequestException as err:
-                    print(f"Network error creating bucket {bucket_name}: {err}")
-                    continue
-                if response.status_code != 201:
-                    print(f"Error creating bucket {bucket_name}: {response.status_code} - {response.text}")
+    items, errors = plan_buckets(config)
+    for message in errors:
+        print(message)
+    for item in items:
+        params = {key: value for key, value in item.items() if key != 'env'}
+        bucket_name = params['bucket_name']
+        try:
+            status, text = create_bucket(config, **params)
+        except requests.RequestException as err:
+            print(f"Network error creating bucket {bucket_name}: {err}")
+            continue
+        if status != 201:
+            print(f"Error creating bucket {bucket_name}: {status} - {text}")
 
 
 def create_bucket(config, account_id, bucket_name, quota_gb, storage_location, allowed_ips, account_meta_name=None):
@@ -274,6 +322,24 @@ def _fetch_credential(session, base_cred_url, headers, project_id, ssl_verify):
     except (KeyError, IndexError, TypeError, json.JSONDecodeError) as err:
         print(f"Error parsing credentials for {project_id}: {err}")
         return None
+
+
+def request_credential_for(config, project_id):
+    """Generate a new credential for one account. Returns the export dict or None."""
+    with requests.Session() as s:
+        return _request_credential(
+            s, f"{config['api']['base_url']}/credentials", build_headers(config),
+            project_id, get_ssl_verify(config),
+        )
+
+
+def fetch_credential_for(config, project_id):
+    """Retrieve the existing credential of one account. Returns the export dict or None."""
+    with requests.Session() as s:
+        return _fetch_credential(
+            s, f"{config['api']['base_url']}/credentials/", build_headers(config),
+            project_id, get_ssl_verify(config),
+        )
 
 
 def _write_creds_file(bucket_name, env_to_creds, environments):
