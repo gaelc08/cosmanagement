@@ -19,11 +19,13 @@ account at a time, and never more than one search at once.
 import argparse
 import contextlib
 import io
+import ipaddress
 import json
 import re
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import requests
 from urllib.parse import parse_qs, urlparse
 
 from dotenv import load_dotenv
@@ -31,6 +33,11 @@ from dotenv import load_dotenv
 import hive_management as hm
 
 TENANT_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$')
+ACCOUNT_RE = re.compile(r'^sa-[A-Za-z0-9][A-Za-z0-9_-]{0,127}$')
+BUCKET_RE = re.compile(r'^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$')
+LABEL_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+MAX_QUOTA_GB = 1_000_000
+MAX_BODY = 64 * 1024
 _api_lock = threading.Lock()
 
 PAGE = """<!doctype html>
@@ -65,6 +72,15 @@ PAGE = """<!doctype html>
   .account ul { margin:0; padding-left:18px; font-family: ui-monospace, monospace; font-size:13px; }
   .empty { color:var(--muted); font-size:13px; }
   details { margin-top:16px; color:var(--muted); font-size:13px; }
+  #create-box > summary { font-size:15px; color:var(--fg); cursor:pointer; font-weight:600; }
+  #create { display:grid; grid-template-columns: 200px 1fr; gap:8px 12px; align-items:start; margin-top:12px; }
+  #create label { padding-top:7px; color:var(--fg); }
+  #create small { color:var(--muted); grid-column:2; margin-top:-4px; }
+  #create textarea, #create select { font:inherit; padding:6px 10px; border:1px solid var(--line); border-radius:6px;
+                                     background:var(--bg); color:var(--fg); width:100%; }
+  #create input[type=text] { width:100%; }
+  #create button { grid-column:2; justify-self:start; }
+  @media (max-width: 560px) { #create { grid-template-columns: 1fr; } #create small, #create button { grid-column:1; } }
   pre { white-space:pre-wrap; background:var(--card); border:1px solid var(--line); border-radius:6px; padding:8px; }
 </style>
 </head>
@@ -84,11 +100,31 @@ PAGE = """<!doctype html>
     <button type="button" class="secondary" id="copy">Copier les buckets affichés</button>
   </div>
   <div id="results"></div>
+  <details id="create-box" hidden>
+    <summary>Créer un bucket</summary>
+    <form id="create" autocomplete="off">
+      <label for="c-account">Compte</label>
+      <select id="c-account" required></select>
+      <label for="c-bucket">Nom du bucket</label>
+      <input type="text" id="c-bucket" required maxlength="63" placeholder="ex. ctie-hive-dev-fina">
+      <small>3 à 63 caractères : minuscules, chiffres, - et .</small>
+      <label for="c-quota">Quota (Go)</label>
+      <input type="text" id="c-quota" required inputmode="numeric" placeholder="ex. 60">
+      <label for="c-location">Storage location</label>
+      <input type="text" id="c-location" required placeholder="ex. cv-ctie-hive-dev-01">
+      <label for="c-ips">IP autorisées</label>
+      <textarea id="c-ips" rows="4" required placeholder="Une IP (ou CIDR) par ligne, ou séparées par des virgules"></textarea>
+      <label for="c-meta">x-Account-Meta-name</label>
+      <input type="text" id="c-meta" placeholder="ex. ctie-hive-dev (facultatif)">
+      <button type="submit" id="c-go">Créer le bucket</button>
+    </form>
+  </details>
   <details id="logbox" hidden><summary>Détails de l'appel API</summary><pre id="log"></pre></details>
 </main>
 <script>
   const $ = id => document.getElementById(id);
   let data = {};
+  let lastTenant = '';
 
   function render() {
     const q = $('filter').value.trim().toLowerCase();
@@ -130,13 +166,27 @@ PAGE = """<!doctype html>
     $('status').textContent = names.length + ' bucket(s) copié(s).';
   });
 
-  $('search').addEventListener('submit', async e => {
-    e.preventDefault();
-    const tenant = $('tenant').value.trim();
+  function fillAccounts() {
+    const sel = $('c-account');
+    const previous = sel.value;
+    sel.textContent = '';
+    for (const account of Object.keys(data)) {
+      const opt = document.createElement('option');
+      opt.value = opt.textContent = account;
+      sel.append(opt);
+    }
+    if (previous && data[previous]) sel.value = previous;
+    $('create-box').hidden = !Object.keys(data).length;
+  }
+
+  async function runSearch(tenant, keepMessage) {
     const go = $('go'), status = $('status');
+    lastTenant = tenant;
     go.disabled = true;
-    status.className = '';
-    status.textContent = 'Recherche en cours (un appel API par compte, ça peut prendre un moment)...';
+    if (!keepMessage) {
+      status.className = '';
+      status.textContent = 'Recherche en cours (un appel API par compte, ça peut prendre un moment)...';
+    }
     $('results').textContent = '';
     $('toolbar').style.display = 'none';
     try {
@@ -152,18 +202,71 @@ PAGE = """<!doctype html>
       data = out.accounts;
       const n = Object.keys(data).length;
       const total = Object.values(data).reduce((s, b) => s + b.length, 0);
-      status.className = out.has_error ? 'error' : '';
-      status.textContent = n
-        ? n + ' compte(s) "' + out.prefix + '*", ' + total + ' bucket(s).' + (out.has_error ? ' Des erreurs ont eu lieu, voir les détails.' : '')
-        : 'Aucun compte "' + out.prefix + '*" trouvé.' + (out.has_error ? ' Voir les détails ci-dessous.' : '');
+      if (!keepMessage || out.has_error) {
+        status.className = out.has_error ? 'error' : '';
+        status.textContent = n
+          ? n + ' compte(s) "' + out.prefix + '*", ' + total + ' bucket(s).' + (out.has_error ? ' Des erreurs ont eu lieu, voir les détails.' : '')
+          : 'Aucun compte "' + out.prefix + '*" trouvé.' + (out.has_error ? ' Voir les détails ci-dessous.' : '');
+      }
       $('filter').value = '';
       $('toolbar').style.display = n ? 'flex' : 'none';
+      fillAccounts();
       render();
     } catch (err) {
       status.className = 'error';
       status.textContent = 'Erreur : ' + err;
     } finally {
       go.disabled = false;
+    }
+  }
+
+  $('search').addEventListener('submit', e => {
+    e.preventDefault();
+    runSearch($('tenant').value.trim(), false);
+  });
+
+  $('create').addEventListener('submit', async e => {
+    e.preventDefault();
+    const body = {
+      account: $('c-account').value,
+      bucket: $('c-bucket').value.trim(),
+      quota_gb: $('c-quota').value.trim(),
+      storage_location: $('c-location').value.trim(),
+      allowed_ips: $('c-ips').value,
+      account_meta_name: $('c-meta').value.trim(),
+    };
+    const ips = body.allowed_ips.split(/[\\s,;]+/).filter(Boolean).length;
+    const summary = 'Créer le bucket "' + body.bucket + '"\\n' +
+      '  compte : ' + body.account + '\\n' +
+      '  quota : ' + body.quota_gb + ' Go\\n' +
+      '  storage location : ' + body.storage_location + '\\n' +
+      '  IP autorisées : ' + ips + '\\n' +
+      '  x-Account-Meta-name : ' + (body.account_meta_name || '(aucun)');
+    if (!confirm(summary)) return;
+
+    const btn = $('c-go'), status = $('status');
+    btn.disabled = true;
+    status.className = '';
+    status.textContent = 'Création en cours...';
+    try {
+      const res = await fetch('/api/create', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body),
+      });
+      const out = await res.json();
+      if (out.log) { $('logbox').hidden = false; $('log').textContent = out.log; }
+      status.className = (res.ok && out.ok) ? '' : 'error';
+      status.textContent = out.error || out.message || ('Erreur HTTP ' + res.status);
+      if (res.ok && out.ok) {
+        $('c-bucket').value = '';
+        await runSearch(lastTenant, true);
+      }
+    } catch (err) {
+      status.className = 'error';
+      status.textContent = 'Erreur : ' + err;
+    } finally {
+      btn.disabled = false;
     }
   });
 </script>
@@ -199,6 +302,74 @@ def search_tenant(config, tenant):
         'log': text,
         'has_error': has_error,
     }
+
+
+def parse_create_request(body):
+    """Validate the JSON body of POST /api/create. Returns (params, error)."""
+    if not isinstance(body, dict):
+        return None, 'Requête invalide.'
+
+    account = str(body.get('account', '')).strip()
+    if not ACCOUNT_RE.match(account):
+        return None, 'Compte invalide (attendu : sa-<tenant>-<suffixe>).'
+
+    bucket = str(body.get('bucket', '')).strip()
+    if not BUCKET_RE.match(bucket):
+        return None, 'Nom de bucket invalide (3 à 63 caractères : minuscules, chiffres, - et .).'
+
+    try:
+        quota_gb = int(str(body.get('quota_gb', '')).strip())
+    except ValueError:
+        return None, 'Quota invalide (nombre entier de Go).'
+    if not 1 <= quota_gb <= MAX_QUOTA_GB:
+        return None, f'Quota invalide (entre 1 et {MAX_QUOTA_GB} Go).'
+
+    location = str(body.get('storage_location', '')).strip()
+    if not LABEL_RE.match(location):
+        return None, 'Storage location invalide.'
+
+    raw_ips = re.split(r'[\s,;]+', str(body.get('allowed_ips', '')).strip())
+    ips = []
+    for raw in filter(None, raw_ips):
+        try:
+            ipaddress.ip_network(raw, strict=False)
+        except ValueError:
+            return None, f'Adresse IP invalide : {raw[:64]}'
+        if raw not in ips:
+            ips.append(raw)
+    if not ips:
+        return None, 'Au moins une IP autorisée est requise.'
+
+    meta_name = str(body.get('account_meta_name', '')).strip()
+    if meta_name and not LABEL_RE.match(meta_name):
+        return None, "Valeur invalide pour l'en-tête x-Account-Meta-name."
+
+    return {
+        'account_id': account,
+        'bucket_name': bucket,
+        'quota_gb': quota_gb,
+        'storage_location': location,
+        'allowed_ips': ips,
+        'account_meta_name': meta_name or None,
+    }, None
+
+
+def create_bucket_request(config, params):
+    """Run the creation call. Returns {ok, message, log}."""
+    log = io.StringIO()
+    with _api_lock, contextlib.redirect_stdout(log):
+        try:
+            status, text = hm.create_bucket(config, **params)
+            ok = status == 201
+            message = (
+                f"Bucket {params['bucket_name']} créé dans {params['account_id']}."
+                if ok else f"Échec de la création : HTTP {status} - {text[:500]}"
+            )
+        except requests.RequestException as err:
+            ok, message = False, f'Erreur réseau : {err}'
+        except SystemExit:  # no credentials, see load_auth_header()
+            ok, message = False, 'Identifiants introuvables (voir les détails).'
+    return {'ok': ok, 'message': message, 'log': log.getvalue().strip()}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -239,6 +410,40 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, search_tenant(self.config, tenant))
         else:
             self._json(404, {'error': 'not found'})
+
+    def do_POST(self):
+        if self.headers.get('Host', '') not in self.allowed_hosts:
+            self._json(403, {'error': 'forbidden host'})
+            return
+        # Writes must come from this page: same-origin, and JSON (which a
+        # cross-site form can't send without a CORS preflight we never allow).
+        origin = self.headers.get('Origin')
+        if origin and urlparse(origin).netloc not in self.allowed_hosts:
+            self._json(403, {'error': 'forbidden origin'})
+            return
+        if urlparse(self.path).path != '/api/create':
+            self._json(404, {'error': 'not found'})
+            return
+        if self.headers.get('Content-Type', '').split(';')[0].strip() != 'application/json':
+            self._json(415, {'error': 'application/json attendu'})
+            return
+        try:
+            length = int(self.headers.get('Content-Length', ''))
+        except ValueError:
+            length = -1
+        if not 0 < length <= MAX_BODY:
+            self._json(400, {'error': 'Corps de requête invalide.'})
+            return
+        try:
+            body = json.loads(self.rfile.read(length))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._json(400, {'error': 'JSON invalide.'})
+            return
+        params, error = parse_create_request(body)
+        if error:
+            self._json(400, {'error': error})
+            return
+        self._json(200, create_bucket_request(self.config, params))
 
     def log_message(self, fmt, *args):
         pass  # keep the terminal for the API messages

@@ -195,6 +195,31 @@ def create_buckets(config):
                     print(f"Error creating bucket {bucket_name}: {response.status_code} - {response.text}")
 
 
+def create_bucket(config, account_id, bucket_name, quota_gb, storage_location, allowed_ips, account_meta_name=None):
+    """Create one bucket in an existing storage account (PUT /container/<name>).
+
+    Same payload as create_buckets(), but for a single bucket whose values
+    are all given by the caller. Returns (status_code, response_text);
+    network failures are raised as requests.RequestException.
+    """
+    headers = build_headers(config)
+    if account_meta_name:
+        headers['x-Account-Meta-name'] = account_meta_name
+    payload = {
+        "hard_quota": quota_gb * 1000000000,
+        "firewall": {"allowed_ip": allowed_ips},
+        "storage_location": storage_location,
+        "service_instance": account_id,
+    }
+    url = f"{config['api']['base_url']}/container/{bucket_name}"
+    with requests.Session() as s:
+        response = s.put(
+            url, headers=headers, data=json.dumps(payload),
+            verify=get_ssl_verify(config), timeout=30,
+        )
+    return response.status_code, response.text
+
+
 def _request_credential(session, base_cred_url, headers, project_id, ssl_verify):
     """POST a new credential for project_id. Returns the export dict or None."""
     creds_body = {"credential": {"project_id": project_id, "type": "ec2"}}
