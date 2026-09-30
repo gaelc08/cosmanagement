@@ -1365,11 +1365,18 @@ def handle_update_bucket(config, body):
     params, error = parse_update_bucket(body)
     if error:
         return 400, {'error': error}
-    return 200, _run_write(
+    result = _run_write(
         lambda: hm.update_bucket(config, **params),
         f"Bucket {params['bucket_name']} modifié.",
         DONE,
     )
+    if not result['ok'] and 'BucketAlreadyOwnedByYou' in result['message']:
+        result['message'] = (
+            "L'API refuse de modifier un bucket existant avec un PUT : ce PUT ne sert qu'à le créer "
+            "(BucketAlreadyOwnedByYou). La modification passe par un autre appel de l'API, à identifier dans son guide. "
+            "Détail : " + result['message']
+        )
+    return 200, result
 
 
 def handle_delete_bucket(config, body):
