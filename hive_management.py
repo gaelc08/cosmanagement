@@ -343,32 +343,25 @@ def get_bucket(config, bucket_name):
     return response.status_code, response.text
 
 
-def update_bucket(config, bucket_name, account_id, quota_gb=None, allowed_ips=None,
-                  storage_location=None, account_meta_name=None, quota_bytes=None):
-    """Change an existing bucket (PUT /container/<name>).
+def update_bucket(config, bucket_name, quota_gb=None, allowed_ips=None, storage_location=None):
+    """Change an existing bucket (PATCH /container/<name>); only the fields that are not None are sent.
 
-    The API treats this PUT like the creation one: it rejects a request without
-    a storage location ("Default container vault is not set"), so callers should
-    send the bucket's whole configuration (quota, firewall, storage location by
-    name), not just the field they want to change. `quota_bytes` sends the quota
-    as is; otherwise `quota_gb` is multiplied by 10**9 like create_bucket().
-    Only the fields that are not None are sent. Returns (status_code, response_text).
+    PUT on the same URL only creates: an existing bucket answers 409
+    BucketAlreadyOwnedByYou. Returns (status_code, response_text); network
+    failures raise requests.RequestException.
     """
-    headers = build_headers(config)
-    if account_meta_name:
-        headers['x-Account-Meta-name'] = account_meta_name
-    payload = {"service_instance": account_id}
-    if quota_bytes is not None:
-        payload["hard_quota"] = quota_bytes
-    elif quota_gb is not None:
+    payload = {}
+    if quota_gb is not None:
         payload["hard_quota"] = quota_gb * 1000000000
     if allowed_ips is not None:
         payload["firewall"] = {"allowed_ip": allowed_ips}
     if storage_location:
         payload["storage_location"] = storage_location
+    if not payload:
+        raise ValueError("update_bucket: nothing to change")
     with requests.Session() as s:
-        response = s.put(_container_url(config, bucket_name), headers=headers,
-                         data=json.dumps(payload), verify=get_ssl_verify(config), timeout=30)
+        response = s.patch(_container_url(config, bucket_name), headers=build_headers(config),
+                           data=json.dumps(payload), verify=get_ssl_verify(config), timeout=30)
     return response.status_code, response.text
 
 

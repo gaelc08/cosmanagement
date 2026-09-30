@@ -266,13 +266,6 @@ PAGE = r"""<!doctype html>
     const rest = account.slice(3);
     return rest.includes('-') ? rest.slice(0, rest.lastIndexOf('-')) : rest;
   }
-  // GET returns a storage location as an internal id; remember which name the user chose for it.
-  function rememberedLocation(id) {
-    try { return typeof id === 'string' ? localStorage.getItem('cos.loc.' + id) : null; } catch (e) { return null; }
-  }
-  function rememberLocation(id, name) {
-    try { if (typeof id === 'string' && id && id !== name) localStorage.setItem('cos.loc.' + id, name); } catch (e) { /* private mode */ }
-  }
   // A tenant's storage locations: those declared for it in config.json, else the known container vaults
   // named cv-<tenant> or cv-<tenant>-<number> (cv-act-01 and cv-act-02 belong to "act", cv-act-geoportal-01 does not).
   function locationsOfTenant(tenant) {
@@ -454,46 +447,27 @@ PAGE = r"""<!doctype html>
       return;
     }
 
-    // edit: the API's PUT replaces the whole configuration, so quota, IPs and location are all sent.
+    // edit: a PATCH changes only what it carries, so only the fields you changed are sent.
     const details = ok ? out.details : null;
     const quota = findQuota(details);
     const ips = findIps(details);
-    const location = findKey(details, 'storage_location');
-    box.append(el('div', 'L\'API remplace la configuration complète du bucket : quota, IP et storage location sont tous envoyés. ' +
-                         'La storage location se saisit par son nom (l\'API n\'en renvoie que l\'identifiant interne).', 'empty'));
-    if (!ok) box.append(el('div', 'Détails illisibles : renseigne tous les champs.', 'empty'));
+    box.append(el('div', 'Seuls les champs modifiés sont envoyés (PATCH). La storage location ne se change pas ici.', 'empty'));
+    if (!ok) box.append(el('div', 'Détails illisibles : les champs restent vides, renseigne ce que tu veux changer.', 'empty'));
     else {
       const unread = [];
       if (quota === undefined) unread.push('le quota');
       if (ips === undefined) unread.push('les IP autorisées');
-      if (unread.length) box.append(el('div', 'Non lu dans la réponse de l\'API : ' + unread.join(' et ') + '. Ouvre « Voir » pour les retrouver dans la réponse brute, puis saisis-les.', 'empty'));
+      if (unread.length) box.append(el('div', 'Non lu dans la réponse de l\'API : ' + unread.join(' et ') + '. Ouvre « Voir » pour les retrouver dans la réponse brute.', 'empty'));
     }
 
     const form = el('form', undefined, 'grid-form');
     form.autocomplete = 'off';
-    const rawQuota = typeof quota === 'number' ? quota : null;
     const fQuota = el('input'); fQuota.type = 'text'; fQuota.inputMode = 'numeric';
-    fQuota.value = rawQuota !== null ? String(Math.round(rawQuota / 1e9 * 100) / 100) : '';
-    // GET returns the storage location as an internal id, which PUT rejects: offer the tenant's locations by name.
-    const choices = setLocationSuggestions(account);
-    let fLoc;
-    if (choices.length) {
-      fLoc = el('select');
-      fLoc.append(new Option('- choisir -', ''));
-      for (const name of choices) fLoc.append(new Option(labelFor(name), name));
-      const remembered = rememberedLocation(location);
-      if (remembered && choices.includes(remembered)) fLoc.value = remembered;
-      else if (choices.includes(location)) fLoc.value = location;
-      else if (choices.length === 1) fLoc.value = choices[0];
-    } else {
-      fLoc = el('input'); fLoc.type = 'text'; fLoc.setAttribute('list', 'locations-list');
-      fLoc.placeholder = 'nom de la storage location';
-    }
+    fQuota.value = typeof quota === 'number' ? String(Math.round(quota / 1e9 * 100) / 100) : '';
     const fIps = el('textarea'); fIps.rows = 4; fIps.value = Array.isArray(ips) ? ips.join('\n') : '';
-    form.append(el('label', 'Quota (Go)'), fQuota, el('label', 'Storage location'), fLoc);
-    if (typeof location === 'string') form.append(el('small', 'Actuelle (identifiant interne renvoyé par l\'API) : ' + location));
-    form.append(el('label', 'IP autorisées'), fIps);
-    const initialQuota = fQuota.value.trim();
+    form.append(el('label', 'Quota (Go)'), fQuota, el('label', 'IP autorisées'), fIps);
+    const ipList = v => v.split(/[\s,;]+/).filter(Boolean).join(',');
+    const initial = {quota: fQuota.value.trim(), ips: ipList(fIps.value)};
     const buttons = el('div', undefined, 'buttons');
     const save = el('button', 'Enregistrer'); save.type = 'submit';
     const cancel = el('button', 'Annuler', 'secondary'); cancel.type = 'button';
@@ -502,24 +476,18 @@ PAGE = r"""<!doctype html>
     form.append(buttons);
     form.addEventListener('submit', async e => {
       e.preventDefault();
-      const body = {account, bucket, storage_location: fLoc.value.trim(), allowed_ips: fIps.value};
       const quotaText = fQuota.value.trim();
-      // An untouched quota that is not a whole number of GB is sent back exactly as the API gave it.
-      if (rawQuota !== null && quotaText === initialQuota) body.quota_bytes = rawQuota;
-      else body.quota_gb = quotaText;
-      const ipCount = body.allowed_ips.split(/[\s,;]+/).filter(Boolean).length;
-      const missing = [];
-      if (!(body.quota_bytes || body.quota_gb)) missing.push('le quota');
-      if (!ipCount) missing.push('les IP autorisées');
-      if (!body.storage_location) missing.push('le nom de la storage location');
-      if (missing.length) {
-        setStatus('Manque : ' + missing.join(', ') + '. L\'API remplace toute la configuration du bucket, donc tout doit être renseigné.', true);
-        return;
-      }
-      const summary = 'Modifier le bucket "' + bucket + '" (configuration complète envoyée)\n' +
-        '  quota : ' + (body.quota_bytes ? quotaText + ' Go (inchangé)' : body.quota_gb + ' Go') + '\n' +
-        '  storage location : ' + body.storage_location + '\n' +
-        '  IP autorisées : ' + ipCount;
+      const newIps = ipList(fIps.value);
+      // A quota shown as 53.69 (not a whole number of GB) is never sent unless you retype it.
+      const body = {
+        bucket,
+        quota_gb: quotaText && quotaText !== initial.quota ? quotaText : '',
+        allowed_ips: newIps && newIps !== initial.ips ? fIps.value : '',
+      };
+      if (!body.quota_gb && !body.allowed_ips) { setStatus('Aucune modification à envoyer.', false); return; }
+      const summary = 'Modifier le bucket "' + bucket + '"\n' +
+        (body.quota_gb ? '  quota : ' + body.quota_gb + ' Go\n' : '') +
+        (body.allowed_ips ? '  IP autorisées : ' + body.allowed_ips.split(/[\s,;]+/).filter(Boolean).length + '\n' : '');
       if (!confirm(summary)) return;
       save.disabled = true;
       setStatus('Modification en cours...', false);
@@ -528,7 +496,7 @@ PAGE = r"""<!doctype html>
       if (res.log) showLog(res.log);
       const done = !res.error && res.ok;
       setStatus(res.error || res.message, !done);
-      if (done) { rememberLocation(location, body.storage_location); closeBucketPanel(); }
+      if (done) closeBucketPanel();
     });
     box.append(form);
   }
@@ -1310,54 +1278,29 @@ def handle_get_bucket(config, body):
     return 200, {'ok': True, 'details': details, 'raw': text[:20000], 'log': log}
 
 
-def _parse_quota_bytes(value):
-    """Quota in bytes, sent back unchanged when the bucket's quota is not a whole number of GB."""
-    if isinstance(value, bool):
-        return None, 'Quota (octets) invalide.'
-    try:
-        quota = int(str(value).strip())
-    except ValueError:
-        return None, 'Quota (octets) invalide.'
-    if not 1 <= quota <= MAX_QUOTA_GB * 10**9:
-        return None, 'Quota (octets) hors limites.'
-    return quota, None
-
-
 def parse_update_bucket(body):
-    """Validate the JSON body of POST /api/bucket/update.
-
-    The API's PUT replaces the bucket's configuration and rejects a request
-    without a storage location, so quota, IPs and storage location are all required.
-    """
+    """Validate the JSON body of POST /api/bucket/update (a PATCH: only the fields given are changed)."""
     bucket = _existing_bucket(body)
     if not bucket:
         return None, 'Nom de bucket invalide.'
-    account = _valid_account(body)
-    if not account:
-        return None, 'Compte invalide (attendu : sa-<tenant>-<suffixe>).'
-    params = {'bucket_name': bucket, 'account_id': account}
-
-    if body.get('quota_bytes') not in (None, ''):
-        params['quota_bytes'], error = _parse_quota_bytes(body['quota_bytes'])
-    elif _text(body, 'quota_gb'):
+    params = {'bucket_name': bucket}
+    if _text(body, 'quota_gb'):
         params['quota_gb'], error = _parse_quota(body['quota_gb'])
-    else:
-        return None, 'Quota requis (le PUT remplace toute la configuration du bucket).'
-    if error:
-        return None, error
-
-    ips, error = _parse_ips(body.get('allowed_ips', ''))
-    if error:
-        return None, error
-    if not ips:
-        return None, 'Au moins une IP autorisée est requise (le PUT remplace toute la configuration du bucket).'
-    params['allowed_ips'] = ips
-
-    if not _text(body, 'storage_location'):
-        return None, "Storage location requise : son nom, pas l'identifiant renvoyé par l'API."
-    params['storage_location'], error = _parse_location(body['storage_location'])
-    if error:
-        return None, error
+        if error:
+            return None, error
+    if _text(body, 'allowed_ips'):
+        ips, error = _parse_ips(body['allowed_ips'])
+        if error:
+            return None, error
+        if not ips:
+            return None, 'Au moins une IP autorisée est requise.'
+        params['allowed_ips'] = ips
+    if _text(body, 'storage_location'):
+        params['storage_location'], error = _parse_location(body['storage_location'])
+        if error:
+            return None, error
+    if len(params) == 1:
+        return None, 'Rien à modifier.'
     return params, None
 
 
@@ -1365,18 +1308,11 @@ def handle_update_bucket(config, body):
     params, error = parse_update_bucket(body)
     if error:
         return 400, {'error': error}
-    result = _run_write(
+    return 200, _run_write(
         lambda: hm.update_bucket(config, **params),
         f"Bucket {params['bucket_name']} modifié.",
         DONE,
     )
-    if not result['ok'] and 'BucketAlreadyOwnedByYou' in result['message']:
-        result['message'] = (
-            "L'API refuse de modifier un bucket existant avec un PUT : ce PUT ne sert qu'à le créer "
-            "(BucketAlreadyOwnedByYou). La modification passe par un autre appel de l'API, à identifier dans son guide. "
-            "Détail : " + result['message']
-        )
-    return 200, result
 
 
 def handle_delete_bucket(config, body):
