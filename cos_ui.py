@@ -55,6 +55,7 @@ ACCOUNT_RE = re.compile(r'^sa-[A-Za-z0-9][A-Za-z0-9_-]{0,127}$')
 BUCKET_RE = re.compile(r'^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$')          # names we create
 BUCKET_NAME_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$')     # names that already exist
 LABEL_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+ACCOUNT_TENANT_RE = re.compile(r'^sa-(.+)-\d+$')
 FIND_RE = re.compile(r'^[A-Za-z0-9._-]{1,255}$')                       # a bucket name, or part of one
 MAX_QUOTA_GB = 1_000_000
 MAX_BODY = 1024 * 1024
@@ -102,6 +103,8 @@ PAGE = r"""<!doctype html>
   #find { margin-top:10px; }
   #search input, #find input { min-width:200px; }
   #find-help { margin:4px 0 0; }
+  #tenants-panel .chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+  #tenants-panel input { margin-top:8px; min-width:220px; }
   #status { margin:12px 0; color:var(--muted); min-height:1.5em; }
   #status.error { color:var(--err); }
   .toolbar { display:none; gap:8px; margin:8px 0 16px; flex-wrap:wrap; }
@@ -158,11 +161,14 @@ PAGE = r"""<!doctype html>
   <section id="tab-search">
     <form id="search">
       <span class="prefix">sa-</span>
-      <input type="text" id="tenant" placeholder="tenant" autocomplete="off" autofocus required
+      <input type="text" id="tenant" placeholder="tenant" autocomplete="off" autofocus required list="tenants-datalist"
              pattern="[A-Za-z0-9][A-Za-z0-9_\-]*" maxlength="64">
       <span class="prefix">-</span>
       <button type="submit" id="go">Rechercher</button>
+      <button type="button" class="secondary" id="tenants-go">Lister les tenants</button>
     </form>
+    <datalist id="tenants-datalist"></datalist>
+    <div id="tenants-panel" class="panel" hidden></div>
     <form id="find">
       <span class="prefix">bucket</span>
       <input type="text" id="bname" placeholder="nom du bucket" autocomplete="off" maxlength="255"
@@ -242,6 +248,31 @@ PAGE = r"""<!doctype html>
   const $ = id => document.getElementById(id);
   let data = {};
   let lastSearch = null;   // {kind: 'tenant' | 'bucket' | 'scan', value}
+  let tenantLocations = {};   // tenant -> storage locations, from config.json
+  let allLocations = [];
+  let tenants = [];
+
+  // sa-<tenant>-<number>; mirrors tenant_of() on the server
+  function tenantOf(account) {
+    const m = /^sa-(.+)-\d+$/.exec(account);
+    if (m) return m[1];
+    const rest = account.slice(3);
+    return rest.includes('-') ? rest.slice(0, rest.lastIndexOf('-')) : rest;
+  }
+  // GET returns a storage location as an internal id; remember which name the user chose for it.
+  function rememberedLocation(id) {
+    try { return typeof id === 'string' ? localStorage.getItem('cos.loc.' + id) : null; } catch (e) { return null; }
+  }
+  function rememberLocation(id, name) {
+    try { if (typeof id === 'string' && id && id !== name) localStorage.setItem('cos.loc.' + id, name); } catch (e) { /* private mode */ }
+  }
+  function setLocationSuggestions(account) {
+    const names = tenantLocations[tenantOf(account)] || allLocations;
+    const list = $('locations-list');
+    list.textContent = '';
+    for (const name of names) { const o = el('option'); o.value = name; list.append(o); }
+    return tenantLocations[tenantOf(account)] || [];
+  }
 
   function el(tag, text, cls) {
     const e = document.createElement(tag);
@@ -424,13 +455,25 @@ PAGE = r"""<!doctype html>
     const rawQuota = typeof quota === 'number' ? quota : null;
     const fQuota = el('input'); fQuota.type = 'text'; fQuota.inputMode = 'numeric';
     fQuota.value = rawQuota !== null ? String(Math.round(rawQuota / 1e9 * 100) / 100) : '';
-    // GET returns the storage location as an internal id, which PUT rejects: show it, never prefill it.
-    const fLoc = el('input'); fLoc.type = 'text'; fLoc.setAttribute('list', 'locations-list');
-    fLoc.placeholder = (typeof location === 'string' ? 'actuelle : ' + location + ' - ' : '') + 'nom de la storage location';
-    const fIps = el('textarea'); fIps.rows = 4; fIps.value = Array.isArray(ips) ? ips.join('\n') : '';
-    for (const [label, field] of [['Quota (Go)', fQuota], ['Storage location', fLoc], ['IP autorisées', fIps]]) {
-      form.append(el('label', label), field);
+    // GET returns the storage location as an internal id, which PUT rejects: offer the tenant's locations by name.
+    const choices = setLocationSuggestions(account);
+    let fLoc;
+    if (choices.length) {
+      fLoc = el('select');
+      fLoc.append(new Option('- choisir -', ''));
+      for (const name of choices) fLoc.append(new Option(name, name));
+      const remembered = rememberedLocation(location);
+      if (remembered && choices.includes(remembered)) fLoc.value = remembered;
+      else if (choices.includes(location)) fLoc.value = location;
+      else if (choices.length === 1) fLoc.value = choices[0];
+    } else {
+      fLoc = el('input'); fLoc.type = 'text'; fLoc.setAttribute('list', 'locations-list');
+      fLoc.placeholder = 'nom de la storage location';
     }
+    const fIps = el('textarea'); fIps.rows = 4; fIps.value = Array.isArray(ips) ? ips.join('\n') : '';
+    form.append(el('label', 'Quota (Go)'), fQuota, el('label', 'Storage location'), fLoc);
+    if (typeof location === 'string') form.append(el('small', 'Actuelle (identifiant interne renvoyé par l\'API) : ' + location));
+    form.append(el('label', 'IP autorisées'), fIps);
     const initialQuota = fQuota.value.trim();
     const buttons = el('div', undefined, 'buttons');
     const save = el('button', 'Enregistrer'); save.type = 'submit';
@@ -466,7 +509,7 @@ PAGE = r"""<!doctype html>
       if (res.log) showLog(res.log);
       const done = !res.error && res.ok;
       setStatus(res.error || res.message, !done);
-      if (done) closeBucketPanel();
+      if (done) { rememberLocation(location, body.storage_location); closeBucketPanel(); }
     });
     box.append(form);
   }
@@ -641,6 +684,61 @@ PAGE = r"""<!doctype html>
   $('scan-go').addEventListener('click', () => runFind($('bname').value.trim(), true));
   $('a-id').addEventListener('input', () => { delete $('a-id').dataset.prefilled; });
 
+  // The bucket form offers the storage locations of the account's tenant (and fills the first one if the field is empty).
+  function syncCreateLocation() {
+    const account = $('c-account').value.trim();
+    const field = $('c-location');
+    const choices = ACCOUNT_OK.test(account) ? setLocationSuggestions(account) : [];
+    if (choices.length && (!field.value.trim() || field.dataset.auto)) { field.value = choices[0]; field.dataset.auto = '1'; }
+  }
+  const ACCOUNT_OK = /^sa-[A-Za-z0-9][A-Za-z0-9_-]*$/;
+  $('c-account').addEventListener('input', syncCreateLocation);
+  $('c-location').addEventListener('input', () => { delete $('c-location').dataset.auto; });
+
+  // ---- tenants -------------------------------------------------------------------
+  function renderTenants(filter) {
+    const box = $('tenants-panel');
+    box.textContent = '';
+    box.append(el('strong', tenants.length + ' tenant(s) (déduits des comptes sa-<tenant>-<numéro>)'));
+    const input = el('input'); input.type = 'text'; input.placeholder = 'Filtrer...'; input.value = filter || '';
+    input.addEventListener('input', () => renderTenants(input.value)); box.append(el('br'), input);
+    const chips = el('div', undefined, 'chips');
+    for (const t of tenants) {
+      if (filter && !t.name.toLowerCase().includes(filter.toLowerCase())) continue;
+      const b = el('button', t.name + ' (' + t.accounts.length + ')', 'small secondary');
+      b.title = t.accounts.join(', ');
+      b.addEventListener('click', () => { $('tenant').value = t.name; runSearch(t.name, false); });
+      chips.append(b);
+    }
+    const close = el('button', 'Fermer', 'small secondary');
+    close.addEventListener('click', () => { box.textContent = ''; box.hidden = true; });
+    box.append(chips, el('br'), close);
+    box.hidden = false;
+    if (filter) input.focus();
+  }
+
+  $('tenants-go').addEventListener('click', async () => {
+    const btn = $('tenants-go');
+    btn.disabled = true;
+    setStatus('Lecture des comptes (un seul appel API)...', false);
+    try {
+      const res = await fetch('/api/tenants');
+      const out = await res.json();
+      showLog(out.log);
+      if (!res.ok || out.error) { setStatus(out.error || ('Erreur HTTP ' + res.status), true); return; }
+      tenants = out.tenants;
+      const list = $('tenants-datalist');
+      list.textContent = '';
+      for (const t of tenants) { const o = el('option'); o.value = t.name; list.append(o); }
+      setStatus(out.message || (tenants.length + ' tenant(s) trouvé(s).'), out.has_error);
+      if (tenants.length) renderTenants(''); else { $('tenants-panel').hidden = true; }
+    } catch (err) {
+      setStatus('Erreur : ' + err, true);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
   // ---- create one account / one bucket ---------------------------------------
   async function afterCreate(account) {
     if (lastSearch && lastSearch.kind === 'tenant' && account.startsWith('sa-' + lastSearch.value + '-')) {
@@ -745,7 +843,9 @@ PAGE = r"""<!doctype html>
   async function loadInfo() {
     try {
       const info = await (await fetch('/api/info')).json();
-      for (const name of info.storage_locations || []) { const o = el('option'); o.value = name; $('locations-list').append(o); }
+      tenantLocations = info.tenants || {};
+      allLocations = info.storage_locations || [];
+      for (const name of allLocations) { const o = el('option'); o.value = name; $('locations-list').append(o); }
       const envs = info.environments || [];
       $('b-legacy').hidden = !envs.length;
       const box = $('b-envs');
@@ -904,6 +1004,45 @@ def _find_account(value):
         if found:
             return found
     return None
+
+
+def tenant_of(account_id):
+    """Tenant an account belongs to: sa-<tenant>-<number>. Without a numeric suffix, everything before the last dash."""
+    match = ACCOUNT_TENANT_RE.match(account_id)
+    if match:
+        return match.group(1)
+    rest = account_id[len('sa-'):]
+    return rest.rsplit('-', 1)[0] if '-' in rest else rest
+
+
+def list_tenants(config):
+    """Tenants deduced from the account ids (one GET /accounts). Returns {tenants: [{name, accounts}], log, has_error}."""
+    ids, log, aborted = call_api(lambda: [a['id'] for a in hm.list_accounts(config, prefix='sa-')])
+    tenants = {}
+    for account_id in ids or []:
+        tenants.setdefault(tenant_of(account_id), []).append(account_id)
+    return {
+        'tenants': [{'name': name, 'accounts': sorted(accounts)} for name, accounts in sorted(tenants.items())],
+        'log': log,
+        'has_error': aborted or any(line.startswith(('Error', 'Network error')) for line in log.splitlines()),
+        'message': MSG_NO_CREDS if aborted else '',
+    }
+
+
+def tenant_locations(config):
+    """Storage locations (container vaults) each tenant may use, from config.json's optional
+    "tenants": {"<tenant>": {"storage_locations": ["...", ...]}}. Invalid entries are ignored."""
+    result = {}
+    tenants = config.get('tenants')
+    if not isinstance(tenants, dict):
+        return result
+    for name, entry in tenants.items():
+        names = entry.get('storage_locations') if isinstance(entry, dict) else None
+        if isinstance(names, list):
+            valid = [n for n in names if isinstance(n, str) and LABEL_RE.match(n)]
+            if valid:
+                result[str(name)] = valid
+    return result
 
 
 def find_bucket(config, name, scan):
@@ -1465,12 +1604,17 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == '/':
             self._send(200, PAGE, 'text/html; charset=utf-8')
         elif url.path == '/api/info':
-            locations = self.config.get('storage_locations')
+            by_tenant = tenant_locations(self.config)
+            legacy = self.config.get('storage_locations')
+            known = {v for v in legacy.values() if isinstance(v, str)} if isinstance(legacy, dict) else set()
+            known.update(name for names in by_tenant.values() for name in names)
             self._json(200, {
                 'environments': list(self.config.get('environments', [])),
-                'storage_locations': sorted({v for v in locations.values() if isinstance(v, str)})
-                if isinstance(locations, dict) else [],
+                'storage_locations': sorted(known),
+                'tenants': by_tenant,
             })
+        elif url.path == '/api/tenants':
+            self._json(200, list_tenants(self.config))
         elif url.path == '/api/bucket/find':
             query = parse_qs(url.query)
             name = (query.get('name') or [''])[0].strip()

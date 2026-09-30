@@ -396,5 +396,10 @@
       "10.113.137.99",
       "10.113.137.100"
     ]
+  },
+  "tenants": {
+    "example-tenant": {
+      "storage_locations": ["cv-example-01", "cv-example-02"]
+    }
   }
 }
