@@ -355,6 +355,23 @@ PAGE = r"""<!doctype html>
     return undefined;
   }
 
+  // The response's key names are not documented: look for a numeric quota and the firewall's IP list by shape.
+  function findMatching(value, keyPattern, accept) {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      if (Array.isArray(value)) for (const v of value) { const f = findMatching(v, keyPattern, accept); if (f !== undefined) return f; }
+      return undefined;
+    }
+    for (const [k, v] of Object.entries(value)) if (keyPattern.test(k) && accept(v)) return v;
+    for (const v of Object.values(value)) { const f = findMatching(v, keyPattern, accept); if (f !== undefined) return f; }
+    return undefined;
+  }
+  const isNumber = v => typeof v === 'number';
+  const isStringList = v => Array.isArray(v) && v.every(x => typeof x === 'string');
+  function findQuota(details) { return findMatching(details, /^hard_quota$/i, isNumber) ?? findMatching(details, /quota/i, isNumber); }
+  function findIps(details) {
+    return findMatching(details, /^allowed_ips?$/i, isStringList) ?? findMatching(details, /allowed.?ip|whitelist|firewall/i, isStringList);
+  }
+
   function closeBucketPanel() { $('bucket-panel').textContent = ''; $('bucket-panel').hidden = true; }
 
   function panelHeader(title) {
@@ -389,12 +406,18 @@ PAGE = r"""<!doctype html>
 
     // edit: the API's PUT replaces the whole configuration, so quota, IPs and location are all sent.
     const details = ok ? out.details : null;
-    const quota = findKey(details, 'hard_quota');
-    const ips = findKey(details, 'allowed_ip');
+    const quota = findQuota(details);
+    const ips = findIps(details);
     const location = findKey(details, 'storage_location');
     box.append(el('div', 'L\'API remplace la configuration complète du bucket : quota, IP et storage location sont tous envoyés. ' +
                          'La storage location se saisit par son nom (l\'API n\'en renvoie que l\'identifiant interne).', 'empty'));
     if (!ok) box.append(el('div', 'Détails illisibles : renseigne tous les champs.', 'empty'));
+    else {
+      const unread = [];
+      if (quota === undefined) unread.push('le quota');
+      if (ips === undefined) unread.push('les IP autorisées');
+      if (unread.length) box.append(el('div', 'Non lu dans la réponse de l\'API : ' + unread.join(' et ') + '. Ouvre « Voir » pour les retrouver dans la réponse brute, puis saisis-les.', 'empty'));
+    }
 
     const form = el('form', undefined, 'grid-form');
     form.autocomplete = 'off';
@@ -423,8 +446,12 @@ PAGE = r"""<!doctype html>
       if (rawQuota !== null && quotaText === initialQuota) body.quota_bytes = rawQuota;
       else body.quota_gb = quotaText;
       const ipCount = body.allowed_ips.split(/[\s,;]+/).filter(Boolean).length;
-      if (!(body.quota_bytes || body.quota_gb) || !ipCount || !body.storage_location) {
-        setStatus('Renseigne le quota, les IP et le nom de la storage location : l\'API remplace toute la configuration du bucket.', true);
+      const missing = [];
+      if (!(body.quota_bytes || body.quota_gb)) missing.push('le quota');
+      if (!ipCount) missing.push('les IP autorisées');
+      if (!body.storage_location) missing.push('le nom de la storage location');
+      if (missing.length) {
+        setStatus('Manque : ' + missing.join(', ') + '. L\'API remplace toute la configuration du bucket, donc tout doit être renseigné.', true);
         return;
       }
       const summary = 'Modifier le bucket "' + bucket + '" (configuration complète envoyée)\n' +
