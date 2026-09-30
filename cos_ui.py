@@ -55,6 +55,8 @@ ACCOUNT_RE = re.compile(r'^sa-[A-Za-z0-9][A-Za-z0-9_-]{0,127}$')
 BUCKET_RE = re.compile(r'^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$')          # names we create
 BUCKET_NAME_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$')     # names that already exist
 LABEL_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+CV_PREFIX = 'cv-'                                                      # container vault names
+LABEL_SUFFIX_RE = re.compile(r'^[-_.A-Za-z0-9]{1,20}$')
 ACCOUNT_TENANT_RE = re.compile(r'^sa-(.+)-\d+$')
 FIND_RE = re.compile(r'^[A-Za-z0-9._-]{1,255}$')                       # a bucket name, or part of one
 MAX_QUOTA_GB = 1_000_000
@@ -103,7 +105,10 @@ PAGE = r"""<!doctype html>
   #find { margin-top:10px; }
   #search input, #find input { min-width:200px; }
   #find-help { margin:4px 0 0; }
-  #tenants-panel .chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; }
+  #tenants-panel .chips { margin-top:8px; }
+  .grid-form .chips { grid-column:2; margin-top:-4px; }
+  @media (max-width: 560px) { .grid-form .chips { grid-column:1; } }
   #tenants-panel input { margin-top:8px; min-width:220px; }
   #status { margin:12px 0; color:var(--muted); min-height:1.5em; }
   #status.error { color:var(--err); }
@@ -209,6 +214,7 @@ PAGE = r"""<!doctype html>
       <label for="c-location">Storage location</label>
       <input type="text" id="c-location" required list="locations-list" placeholder="ex. cv-dev-01">
       <datalist id="locations-list"></datalist>
+      <div id="c-location-choices" class="chips"></div>
       <label for="c-ips">IP autorisées</label>
       <textarea id="c-ips" rows="4" required placeholder="Une IP (ou CIDR) par ligne, ou séparées par des virgules"></textarea>
       <label for="c-meta">x-Account-Meta-name</label>
@@ -250,6 +256,7 @@ PAGE = r"""<!doctype html>
   let lastSearch = null;   // {kind: 'tenant' | 'bucket' | 'scan', value}
   let tenantLocations = {};   // tenant -> storage locations, from config.json
   let allLocations = [];
+  let locationLabels = {};   // name suffix -> label, from config.json
   let tenants = [];
 
   // sa-<tenant>-<number>; mirrors tenant_of() on the server
@@ -266,12 +273,24 @@ PAGE = r"""<!doctype html>
   function rememberLocation(id, name) {
     try { if (typeof id === 'string' && id && id !== name) localStorage.setItem('cos.loc.' + id, name); } catch (e) { /* private mode */ }
   }
+  // A tenant's storage locations: those declared for it in config.json, else the known container vaults
+  // named cv-<tenant> or cv-<tenant>-<number> (cv-act-01 and cv-act-02 belong to "act", cv-act-geoportal-01 does not).
+  function locationsOfTenant(tenant) {
+    if (tenantLocations[tenant]) return tenantLocations[tenant];
+    const escaped = tenant.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp('^cv-' + escaped + '(-\\d+)?$');
+    return allLocations.filter(n => re.test(n)).sort();
+  }
+  function labelFor(name) {
+    for (const [suffix, label] of Object.entries(locationLabels)) if (name.endsWith(suffix)) return name + ' (' + label + ')';
+    return name;
+  }
   function setLocationSuggestions(account) {
-    const names = tenantLocations[tenantOf(account)] || allLocations;
+    const own = locationsOfTenant(tenantOf(account));
     const list = $('locations-list');
     list.textContent = '';
-    for (const name of names) { const o = el('option'); o.value = name; list.append(o); }
-    return tenantLocations[tenantOf(account)] || [];
+    for (const name of own.length ? own : allLocations) { const o = el('option'); o.value = name; list.append(o); }
+    return own;
   }
 
   function el(tag, text, cls) {
@@ -461,7 +480,7 @@ PAGE = r"""<!doctype html>
     if (choices.length) {
       fLoc = el('select');
       fLoc.append(new Option('- choisir -', ''));
-      for (const name of choices) fLoc.append(new Option(name, name));
+      for (const name of choices) fLoc.append(new Option(labelFor(name), name));
       const remembered = rememberedLocation(location);
       if (remembered && choices.includes(remembered)) fLoc.value = remembered;
       else if (choices.includes(location)) fLoc.value = location;
@@ -684,12 +703,22 @@ PAGE = r"""<!doctype html>
   $('scan-go').addEventListener('click', () => runFind($('bname').value.trim(), true));
   $('a-id').addEventListener('input', () => { delete $('a-id').dataset.prefilled; });
 
-  // The bucket form offers the storage locations of the account's tenant (and fills the first one if the field is empty).
+  // The bucket form offers the storage locations of the account's tenant as buttons. A single one is filled in;
+  // with several (internal / external endpoint) you choose, so nothing is picked silently.
   function syncCreateLocation() {
     const account = $('c-account').value.trim();
     const field = $('c-location');
     const choices = ACCOUNT_OK.test(account) ? setLocationSuggestions(account) : [];
-    if (choices.length && (!field.value.trim() || field.dataset.auto)) { field.value = choices[0]; field.dataset.auto = '1'; }
+    const box = $('c-location-choices');
+    box.textContent = '';
+    for (const name of choices) {
+      const b = el('button', labelFor(name), 'small secondary');
+      b.type = 'button';
+      b.addEventListener('click', () => { field.value = name; delete field.dataset.auto; });
+      box.append(b);
+    }
+    if (choices.length === 1 && (!field.value.trim() || field.dataset.auto)) { field.value = choices[0]; field.dataset.auto = '1'; }
+    else if (field.dataset.auto && !choices.includes(field.value)) { field.value = ''; delete field.dataset.auto; }
   }
   const ACCOUNT_OK = /^sa-[A-Za-z0-9][A-Za-z0-9_-]*$/;
   $('c-account').addEventListener('input', syncCreateLocation);
@@ -844,6 +873,7 @@ PAGE = r"""<!doctype html>
     try {
       const info = await (await fetch('/api/info')).json();
       tenantLocations = info.tenants || {};
+      locationLabels = info.labels || {};
       allLocations = info.storage_locations || [];
       for (const name of allLocations) { const o = el('option'); o.value = name; $('locations-list').append(o); }
       const envs = info.environments || [];
@@ -1026,6 +1056,40 @@ def list_tenants(config):
         'log': log,
         'has_error': aborted or any(line.startswith(('Error', 'Network error')) for line in log.splitlines()),
         'message': MSG_NO_CREDS if aborted else '',
+    }
+
+
+def parse_locations(text):
+    """Storage location (container vault) names from a pasted list: the first word of each line
+    that starts with cv-. Sizes, dates and column headers on the line are ignored."""
+    names = []
+    for line in text.splitlines():
+        words = line.split()
+        if words and words[0].startswith(CV_PREFIX) and LABEL_RE.match(words[0]) and words[0] not in names:
+            names.append(words[0])
+    return names
+
+
+def load_locations(path):
+    """Read the optional local list of storage locations. A missing file simply means none."""
+    try:
+        with open(path, encoding='utf-8') as f:
+            return parse_locations(f.read())
+    except FileNotFoundError:
+        return []
+    except OSError as err:
+        print(f'Warning: cannot read {path}: {err}')
+        return []
+
+
+def location_labels(config):
+    """Optional config.json "storage_location_labels": {"-01": "interne", ...}, shown next to a location whose name ends so."""
+    labels = config.get('storage_location_labels')
+    if not isinstance(labels, dict):
+        return {}
+    return {
+        k: v for k, v in labels.items()
+        if isinstance(k, str) and isinstance(v, str) and LABEL_SUFFIX_RE.match(k) and 0 < len(v) <= 40
     }
 
 
@@ -1571,6 +1635,7 @@ POST_ROUTES = {
 
 class Handler(BaseHTTPRequestHandler):
     config = None
+    locations = ()
     allowed_hosts = frozenset()
 
     def _send(self, status, body, content_type):
@@ -1608,10 +1673,12 @@ class Handler(BaseHTTPRequestHandler):
             legacy = self.config.get('storage_locations')
             known = {v for v in legacy.values() if isinstance(v, str)} if isinstance(legacy, dict) else set()
             known.update(name for names in by_tenant.values() for name in names)
+            known.update(self.locations)
             self._json(200, {
                 'environments': list(self.config.get('environments', [])),
                 'storage_locations': sorted(known),
                 'tenants': by_tenant,
+                'labels': location_labels(self.config),
             })
         elif url.path == '/api/tenants':
             self._json(200, list_tenants(self.config))
@@ -1676,12 +1743,18 @@ def main():
     parser = argparse.ArgumentParser(description='Local web UI to manage IBM COS accounts, buckets and credentials')
     parser.add_argument('--config', default='config.json', help='Path to config.json')
     parser.add_argument('--env-file', default='.env', help='Path to a .env file with the credentials')
+    parser.add_argument('--locations', default='storage_locations.txt',
+                        help='Optional local list of storage locations (container vaults), one per line; '
+                             'a pasted table works, only the first word starting with cv- is kept')
     parser.add_argument('--port', type=int, default=8765, help='Local port (default: 8765)')
     parser.add_argument('--no-browser', action='store_true', help="Don't open the browser automatically")
     args = parser.parse_args()
 
     load_dotenv(args.env_file, override=True)
     Handler.config = hm.load_config(args.config)
+    Handler.locations = load_locations(args.locations)
+    if Handler.locations:
+        print(f'{len(Handler.locations)} storage location(s) read from {args.locations}')
     Handler.allowed_hosts = frozenset({f'127.0.0.1:{args.port}', f'localhost:{args.port}'})
 
     server = ThreadingHTTPServer(('127.0.0.1', args.port), Handler)

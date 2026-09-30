@@ -7,3 +7,4 @@ ctie-hive-*.json
 __pycache__/
 *.pyc
 buckets*.json
+storage_locations.txt

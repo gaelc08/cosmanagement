@@ -397,6 +397,10 @@
       "10.113.137.100"
     ]
   },
+  "storage_location_labels": {
+    "-01": "interne",
+    "-02": "externe S3"
+  },
   "tenants": {
     "example-tenant": {
       "storage_locations": ["cv-example-01", "cv-example-02"]
