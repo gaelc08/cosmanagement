@@ -97,11 +97,11 @@ If the IBM COS API uses a self-signed or custom certificate, you need to:
      buckets to stdout. Add `--output buckets.json` to also write the
      result as `{"account-id": ["bucket1", "bucket2", ...]}`.
 
-### Web UI (`bucket_finder.py`)
+### Web UI (`hive_ui.py`)
 A local web interface for everything the command line does, plus a tenant search:
 ```bash
-python bucket_finder.py            # opens http://127.0.0.1:8765
-python bucket_finder.py --port 9000 --no-browser
+python hive_ui.py            # opens http://127.0.0.1:8765
+python hive_ui.py --port 9000 --no-browser
 ```
 It uses the same `config.json` and credentials as `hive_management.py` and only listens on `127.0.0.1`.
 

@@ -3,8 +3,8 @@
 Local web UI for the Hive / IBM COS management tasks of hive_management.py.
 
 Usage:
-    python bucket_finder.py                 # http://127.0.0.1:8765, opens the browser
-    python bucket_finder.py --port 9000 --no-browser
+    python hive_ui.py                 # http://127.0.0.1:8765, opens the browser
+    python hive_ui.py --port 9000 --no-browser
 
 Tabs:
   Recherche   list the buckets of every account starting with sa-<tenant>-,
