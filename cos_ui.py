@@ -580,9 +580,10 @@ PAGE = r"""<!doctype html>
       let msg;
       if (out.message) msg = out.message;
       else if (total) msg = total + ' bucket(s) trouvé(s) dans ' + n + ' compte(s)' + (scan ? ' (' + out.scanned + ' compte(s) parcouru(s))' : '') + '.';
-      else if (out.found_without_owner) msg = 'Bucket trouvé, mais l\'API n\'indique pas son compte propriétaire : utilise « Parcourir tous les comptes ».';
+      else if (out.found_without_owner) msg = 'Bucket trouvé, mais aucun compte propriétaire dans la réponse de l\'API (voir les détails) : utilise « Parcourir tous les comptes ».';
       else if (scan) msg = 'Aucun bucket contenant "' + name + '" dans les ' + out.scanned + ' compte(s) parcouru(s).';
-      else msg = 'Aucun bucket nommé "' + name + '" (« Parcourir tous les comptes » accepte un nom partiel).';
+      else msg = 'Aucun bucket nommé "' + name + '"' + (out.status ? ' (HTTP ' + out.status + ')' : '') +
+                 '. Si tu sais qu\'il existe, l\'API ne propose peut-être pas cette recherche directe : utilise « Parcourir tous les comptes ».';
       setStatus(msg, out.has_error);
       $('filter').value = '';
       $('toolbar').style.display = total ? 'flex' : 'none';
@@ -851,6 +852,18 @@ def _find_key(value, key):
     return None
 
 
+def _find_account(value):
+    """First string anywhere in a parsed JSON document that looks like an account id (sa-...), or None."""
+    if isinstance(value, str):
+        return value if ACCOUNT_RE.match(value) else None
+    children = value.values() if isinstance(value, dict) else value if isinstance(value, list) else ()
+    for child in children:
+        found = _find_account(child)
+        if found:
+            return found
+    return None
+
+
 def find_bucket(config, name, scan):
     """Look a bucket up without knowing its account.
 
@@ -862,7 +875,7 @@ def find_bucket(config, name, scan):
     """
     result = {
         'name': name, 'mode': 'scan' if scan else 'direct', 'accounts': {},
-        'found_without_owner': False, 'scanned': 0, 'message': '', 'has_error': False,
+        'found_without_owner': False, 'scanned': 0, 'message': '', 'has_error': False, 'status': None,
     }
 
     def work():
@@ -878,14 +891,20 @@ def find_bucket(config, name, scan):
         if not BUCKET_NAME_RE.match(name):
             return
         status, text, error = _http(lambda: hm.get_bucket(config, name))
+        result['status'] = status
+        # Always show what the API answered, so a wrong endpoint or field name is visible.
+        print(f'GET /container/{name} -> ' + (error or f'HTTP {status} - {text[:300]}'))
         if error:
             result.update(message=error, has_error=True)
         elif status == 200:
             try:
-                owner = _find_key(json.loads(text), 'service_instance')
+                details = json.loads(text)
             except json.JSONDecodeError:
-                owner = None
-            if isinstance(owner, str) and ACCOUNT_RE.match(owner):
+                details = None
+            owner = _find_key(details, 'service_instance')
+            if not (isinstance(owner, str) and ACCOUNT_RE.match(owner)):
+                owner = _find_account(details)
+            if owner:
                 result['accounts'][owner] = [name]
             else:
                 result['found_without_owner'] = True
