@@ -55,6 +55,7 @@ ACCOUNT_RE = re.compile(r'^sa-[A-Za-z0-9][A-Za-z0-9_-]{0,127}$')
 BUCKET_RE = re.compile(r'^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$')          # names we create
 BUCKET_NAME_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$')     # names that already exist
 LABEL_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+FIND_RE = re.compile(r'^[A-Za-z0-9._-]{1,255}$')                       # a bucket name, or part of one
 MAX_QUOTA_GB = 1_000_000
 MAX_BODY = 1024 * 1024
 CREATED = (201,)
@@ -97,8 +98,10 @@ PAGE = r"""<!doctype html>
   #tabs button { background:none; color:var(--muted); border:0; border-bottom:2px solid transparent; border-radius:0; padding:8px 14px; }
   #tabs button.active { color:var(--fg); border-bottom-color:var(--accent); font-weight:600; }
 
-  #search { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
-  #search input { min-width:200px; }
+  #search, #find { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  #find { margin-top:10px; }
+  #search input, #find input { min-width:200px; }
+  #find-help { margin:4px 0 0; }
   #status { margin:12px 0; color:var(--muted); min-height:1.5em; }
   #status.error { color:var(--err); }
   .toolbar { display:none; gap:8px; margin:8px 0 16px; flex-wrap:wrap; }
@@ -160,6 +163,15 @@ PAGE = r"""<!doctype html>
       <span class="prefix">-</span>
       <button type="submit" id="go">Rechercher</button>
     </form>
+    <form id="find">
+      <span class="prefix">bucket</span>
+      <input type="text" id="bname" placeholder="nom du bucket" autocomplete="off" maxlength="255"
+             pattern="[A-Za-z0-9._\-]+">
+      <button type="submit" id="find-go">Trouver</button>
+      <button type="button" class="secondary" id="scan-go">Parcourir tous les comptes</button>
+    </form>
+    <p class="empty" id="find-help">« Trouver » interroge le bucket par son nom exact (un seul appel) et en déduit son compte.
+    « Parcourir » cherche dans tous les comptes, avec un nom partiel si besoin : un appel API par compte, ça peut être long.</p>
     <div class="toolbar" id="toolbar">
       <input type="text" id="filter" placeholder="Filtrer les buckets..." autocomplete="off">
       <button type="button" class="secondary" id="copy">Copier les buckets affichés</button>
@@ -228,7 +240,7 @@ PAGE = r"""<!doctype html>
 <script>
   const $ = id => document.getElementById(id);
   let data = {};
-  let lastTenant = '';
+  let lastSearch = null;   // {kind: 'tenant' | 'bucket' | 'scan', value}
 
   function el(tag, text, cls) {
     const e = document.createElement(tag);
@@ -413,7 +425,7 @@ PAGE = r"""<!doctype html>
       if (res.log) showLog(res.log);
       const done = !res.error && res.ok;
       setStatus(res.error || res.message, !done);
-      if (done) { closeBucketPanel(); if (lastTenant) await runSearch(lastTenant, true); }
+      if (done) closeBucketPanel();
     });
     box.append(form);
   }
@@ -427,7 +439,13 @@ PAGE = r"""<!doctype html>
     if (out.log) showLog(out.log);
     const ok = !out.error && out.ok;
     setStatus(out.error || out.message, !ok);
-    if (ok) { closeBucketPanel(); if (lastTenant) await runSearch(lastTenant, true); }
+    if (ok) {
+      closeBucketPanel();
+      if (lastSearch && lastSearch.kind === 'tenant') { await runSearch(lastSearch.value, true); return; }
+      for (const list of Object.values(data)) { const i = list.indexOf(bucket); if (i >= 0) list.splice(i, 1); }
+      for (const acct of Object.keys(data)) if (!data[acct].length) delete data[acct];
+      render();
+    }
   }
 
   // ---- search ---------------------------------------------------------------
@@ -508,7 +526,7 @@ PAGE = r"""<!doctype html>
 
   async function runSearch(tenant, keepMessage) {
     const go = $('go');
-    lastTenant = tenant;
+    lastSearch = {kind: 'tenant', value: tenant};
     go.disabled = true;
     if (!keepMessage) setStatus('Recherche en cours (un appel API par compte, ça peut prendre un moment)...', false);
     $('results').textContent = '';
@@ -542,11 +560,50 @@ PAGE = r"""<!doctype html>
   }
 
   $('search').addEventListener('submit', e => { e.preventDefault(); runSearch($('tenant').value.trim(), false); });
+
+  async function runFind(name, scan) {
+    if (!name) { setStatus('Saisis un nom de bucket.', true); return; }
+    lastSearch = {kind: scan ? 'scan' : 'bucket', value: name};
+    const buttons = [$('find-go'), $('scan-go')];
+    buttons.forEach(b => { b.disabled = true; });
+    setStatus(scan ? 'Parcours de tous les comptes (un appel API par compte, ça peut être long)...' : 'Recherche du bucket...', false);
+    $('results').textContent = '';
+    $('toolbar').style.display = 'none';
+    try {
+      const res = await fetch('/api/bucket/find?name=' + encodeURIComponent(name) + (scan ? '&scan=1' : ''));
+      const out = await res.json();
+      showLog(out.log);
+      if (!res.ok || out.error) { setStatus(out.error || ('Erreur HTTP ' + res.status), true); return; }
+      data = out.accounts;
+      const n = Object.keys(data).length;
+      const total = Object.values(data).reduce((s, b) => s + b.length, 0);
+      let msg;
+      if (out.message) msg = out.message;
+      else if (total) msg = total + ' bucket(s) trouvé(s) dans ' + n + ' compte(s)' + (scan ? ' (' + out.scanned + ' compte(s) parcouru(s))' : '') + '.';
+      else if (out.found_without_owner) msg = 'Bucket trouvé, mais l\'API n\'indique pas son compte propriétaire : utilise « Parcourir tous les comptes ».';
+      else if (scan) msg = 'Aucun bucket contenant "' + name + '" dans les ' + out.scanned + ' compte(s) parcouru(s).';
+      else msg = 'Aucun bucket nommé "' + name + '" (« Parcourir tous les comptes » accepte un nom partiel).';
+      setStatus(msg, out.has_error);
+      $('filter').value = '';
+      $('toolbar').style.display = total ? 'flex' : 'none';
+      fillAccounts();
+      render();
+    } catch (err) {
+      setStatus('Erreur : ' + err, true);
+    } finally {
+      buttons.forEach(b => { b.disabled = false; });
+    }
+  }
+
+  $('find').addEventListener('submit', e => { e.preventDefault(); runFind($('bname').value.trim(), false); });
+  $('scan-go').addEventListener('click', () => runFind($('bname').value.trim(), true));
   $('a-id').addEventListener('input', () => { delete $('a-id').dataset.prefilled; });
 
   // ---- create one account / one bucket ---------------------------------------
   async function afterCreate(account) {
-    if (lastTenant && account.startsWith('sa-' + lastTenant + '-')) await runSearch(lastTenant, true);
+    if (lastSearch && lastSearch.kind === 'tenant' && account.startsWith('sa-' + lastSearch.value + '-')) {
+      await runSearch(lastSearch.value, true);
+    }
   }
 
   $('account-form').addEventListener('submit', async e => {
@@ -775,6 +832,75 @@ def search_tenant(config, tenant):
         'log': log,
         'has_error': has_error,
     }
+
+
+def _find_key(value, key):
+    """First value stored under `key` anywhere in a parsed JSON document, or None."""
+    if isinstance(value, dict):
+        if key in value:
+            return value[key]
+        children = value.values()
+    elif isinstance(value, list):
+        children = value
+    else:
+        return None
+    for child in children:
+        found = _find_key(child, key)
+        if found is not None:
+            return found
+    return None
+
+
+def find_bucket(config, name, scan):
+    """Look a bucket up without knowing its account.
+
+    Direct (scan=False): one GET on the exact name; the owner is read from the
+    response's `service_instance`. Scan: list every account and keep the
+    buckets whose name contains `name` (case-insensitive), which costs one API
+    call per account. Returns {name, mode, accounts: {id: [buckets]},
+    found_without_owner, scanned, message, log, has_error}.
+    """
+    result = {
+        'name': name, 'mode': 'scan' if scan else 'direct', 'accounts': {},
+        'found_without_owner': False, 'scanned': 0, 'message': '', 'has_error': False,
+    }
+
+    def work():
+        if scan:
+            needle = name.lower()
+            accounts = hm.list_accounts(config, prefix='sa-')
+            for account in accounts:
+                matches = [b for b in hm.list_bucket_names(config, account['id']) if needle in b.lower()]
+                if matches:
+                    result['accounts'][account['id']] = matches
+            result['scanned'] = len(accounts)
+            return
+        if not BUCKET_NAME_RE.match(name):
+            return
+        status, text, error = _http(lambda: hm.get_bucket(config, name))
+        if error:
+            result.update(message=error, has_error=True)
+        elif status == 200:
+            try:
+                owner = _find_key(json.loads(text), 'service_instance')
+            except json.JSONDecodeError:
+                owner = None
+            if isinstance(owner, str) and ACCOUNT_RE.match(owner):
+                result['accounts'][owner] = [name]
+            else:
+                result['found_without_owner'] = True
+        elif status != 404:
+            result.update(message=f'Échec : HTTP {status} - {text[:500]}', has_error=True)
+
+    _, log, aborted = call_api(work)
+    if aborted:
+        result.update(message=MSG_NO_CREDS, has_error=True)
+    result['has_error'] = result['has_error'] or any(
+        line.startswith(('Error', 'Network error')) for line in log.splitlines()
+    )
+    result['accounts'] = dict(sorted(result['accounts'].items()))
+    result['log'] = log
+    return result
 
 
 def _http(thunk):
@@ -1257,6 +1383,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, PAGE, 'text/html; charset=utf-8')
         elif url.path == '/api/info':
             self._json(200, {'environments': list(self.config.get('environments', []))})
+        elif url.path == '/api/bucket/find':
+            query = parse_qs(url.query)
+            name = (query.get('name') or [''])[0].strip()
+            if not FIND_RE.match(name):
+                self._json(400, {'error': 'Nom de bucket invalide (lettres, chiffres, . - et _ uniquement).'})
+                return
+            self._json(200, find_bucket(self.config, name, scan=(query.get('scan') or [''])[0] == '1'))
         elif url.path == '/api/search':
             tenant = (parse_qs(url.query).get('tenant') or [''])[0].strip()
             if not TENANT_RE.match(tenant):
