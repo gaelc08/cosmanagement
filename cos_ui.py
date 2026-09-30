@@ -201,7 +201,8 @@ PAGE = r"""<!doctype html>
       <label for="c-quota">Quota (Go)</label>
       <input type="text" id="c-quota" required inputmode="numeric" placeholder="ex. 60">
       <label for="c-location">Storage location</label>
-      <input type="text" id="c-location" required placeholder="ex. cv-dev-01">
+      <input type="text" id="c-location" required list="locations-list" placeholder="ex. cv-dev-01">
+      <datalist id="locations-list"></datalist>
       <label for="c-ips">IP autorisées</label>
       <textarea id="c-ips" rows="4" required placeholder="Une IP (ou CIDR) par ligne, ou séparées par des virgules"></textarea>
       <label for="c-meta">x-Account-Meta-name</label>
@@ -386,26 +387,28 @@ PAGE = r"""<!doctype html>
       return;
     }
 
-    // edit: prefill from what the API returned, when it can be read
+    // edit: the API's PUT replaces the whole configuration, so quota, IPs and location are all sent.
     const details = ok ? out.details : null;
     const quota = findKey(details, 'hard_quota');
     const ips = findKey(details, 'allowed_ip');
     const location = findKey(details, 'storage_location');
-    if (!ok) box.append(el('div', 'Détails illisibles : remplis seulement ce que tu veux changer.', 'empty'));
-    else box.append(el('div', 'Seuls les champs modifiés sont envoyés.', 'empty'));
+    box.append(el('div', 'L\'API remplace la configuration complète du bucket : quota, IP et storage location sont tous envoyés. ' +
+                         'La storage location se saisit par son nom (l\'API n\'en renvoie que l\'identifiant interne).', 'empty'));
+    if (!ok) box.append(el('div', 'Détails illisibles : renseigne tous les champs.', 'empty'));
 
     const form = el('form', undefined, 'grid-form');
     form.autocomplete = 'off';
+    const rawQuota = typeof quota === 'number' ? quota : null;
     const fQuota = el('input'); fQuota.type = 'text'; fQuota.inputMode = 'numeric';
-    fQuota.value = typeof quota === 'number' ? String(Math.round(quota / 1e9 * 100) / 100) : '';
+    fQuota.value = rawQuota !== null ? String(Math.round(rawQuota / 1e9 * 100) / 100) : '';
     // GET returns the storage location as an internal id, which PUT rejects: show it, never prefill it.
-    const fLoc = el('input'); fLoc.type = 'text';
-    fLoc.placeholder = (typeof location === 'string' ? 'actuelle : ' + location + ' - ' : '') + 'laisser vide pour ne pas changer';
+    const fLoc = el('input'); fLoc.type = 'text'; fLoc.setAttribute('list', 'locations-list');
+    fLoc.placeholder = (typeof location === 'string' ? 'actuelle : ' + location + ' - ' : '') + 'nom de la storage location';
     const fIps = el('textarea'); fIps.rows = 4; fIps.value = Array.isArray(ips) ? ips.join('\n') : '';
     for (const [label, field] of [['Quota (Go)', fQuota], ['Storage location', fLoc], ['IP autorisées', fIps]]) {
       form.append(el('label', label), field);
     }
-    const initial = {quota: fQuota.value, loc: fLoc.value, ips: fIps.value};
+    const initialQuota = fQuota.value.trim();
     const buttons = el('div', undefined, 'buttons');
     const save = el('button', 'Enregistrer'); save.type = 'submit';
     const cancel = el('button', 'Annuler', 'secondary'); cancel.type = 'button';
@@ -414,24 +417,20 @@ PAGE = r"""<!doctype html>
     form.append(buttons);
     form.addEventListener('submit', async e => {
       e.preventDefault();
-      // Send only what was changed: the prefilled quota may not be a whole number of GB.
-      const ipList = v => v.split(/[\s,;]+/).filter(Boolean).join(',');
-      const changed = (now, before) => now.trim() !== before.trim();
-      const body = {
-        account, bucket,
-        quota_gb: changed(fQuota.value, initial.quota) ? fQuota.value.trim() : '',
-        storage_location: changed(fLoc.value, initial.loc) ? fLoc.value.trim() : '',
-        allowed_ips: ipList(fIps.value) !== ipList(initial.ips) ? fIps.value : '',
-      };
-      if (!body.quota_gb && !body.storage_location && !body.allowed_ips) {
-        setStatus('Aucune modification à envoyer.', false);
+      const body = {account, bucket, storage_location: fLoc.value.trim(), allowed_ips: fIps.value};
+      const quotaText = fQuota.value.trim();
+      // An untouched quota that is not a whole number of GB is sent back exactly as the API gave it.
+      if (rawQuota !== null && quotaText === initialQuota) body.quota_bytes = rawQuota;
+      else body.quota_gb = quotaText;
+      const ipCount = body.allowed_ips.split(/[\s,;]+/).filter(Boolean).length;
+      if (!(body.quota_bytes || body.quota_gb) || !ipCount || !body.storage_location) {
+        setStatus('Renseigne le quota, les IP et le nom de la storage location : l\'API remplace toute la configuration du bucket.', true);
         return;
       }
-      const ipCount = body.allowed_ips.split(/[\s,;]+/).filter(Boolean).length;
-      const summary = 'Modifier le bucket "' + bucket + '"\n' +
-        '  quota : ' + (body.quota_gb || '(inchangé)') + (body.quota_gb ? ' Go' : '') + '\n' +
-        '  storage location : ' + (body.storage_location || '(inchangée)') + '\n' +
-        '  IP autorisées : ' + (ipCount ? ipCount : '(inchangées)');
+      const summary = 'Modifier le bucket "' + bucket + '" (configuration complète envoyée)\n' +
+        '  quota : ' + (body.quota_bytes ? quotaText + ' Go (inchangé)' : body.quota_gb + ' Go') + '\n' +
+        '  storage location : ' + body.storage_location + '\n' +
+        '  IP autorisées : ' + ipCount;
       if (!confirm(summary)) return;
       save.disabled = true;
       setStatus('Modification en cours...', false);
@@ -719,6 +718,7 @@ PAGE = r"""<!doctype html>
   async function loadInfo() {
     try {
       const info = await (await fetch('/api/info')).json();
+      for (const name of info.storage_locations || []) { const o = el('option'); o.value = name; $('locations-list').append(o); }
       const envs = info.environments || [];
       $('b-legacy').hidden = !envs.length;
       const box = $('b-envs');
@@ -1080,8 +1080,25 @@ def handle_get_bucket(config, body):
     return 200, {'ok': True, 'details': details, 'raw': text[:20000], 'log': log}
 
 
+def _parse_quota_bytes(value):
+    """Quota in bytes, sent back unchanged when the bucket's quota is not a whole number of GB."""
+    if isinstance(value, bool):
+        return None, 'Quota (octets) invalide.'
+    try:
+        quota = int(str(value).strip())
+    except ValueError:
+        return None, 'Quota (octets) invalide.'
+    if not 1 <= quota <= MAX_QUOTA_GB * 10**9:
+        return None, 'Quota (octets) hors limites.'
+    return quota, None
+
+
 def parse_update_bucket(body):
-    """Validate the JSON body of POST /api/bucket/update. Blank fields are left unchanged."""
+    """Validate the JSON body of POST /api/bucket/update.
+
+    The API's PUT replaces the bucket's configuration and rejects a request
+    without a storage location, so quota, IPs and storage location are all required.
+    """
     bucket = _existing_bucket(body)
     if not bucket:
         return None, 'Nom de bucket invalide.'
@@ -1090,22 +1107,27 @@ def parse_update_bucket(body):
         return None, 'Compte invalide (attendu : sa-<tenant>-<suffixe>).'
     params = {'bucket_name': bucket, 'account_id': account}
 
-    if _text(body, 'quota_gb'):
+    if body.get('quota_bytes') not in (None, ''):
+        params['quota_bytes'], error = _parse_quota_bytes(body['quota_bytes'])
+    elif _text(body, 'quota_gb'):
         params['quota_gb'], error = _parse_quota(body['quota_gb'])
-        if error:
-            return None, error
-    if _text(body, 'allowed_ips'):
-        params['allowed_ips'], error = _parse_ips(body['allowed_ips'])
-        if error:
-            return None, error
-    if _text(body, 'storage_location'):
-        params['storage_location'], error = _parse_location(body['storage_location'])
-        if error:
-            return None, error
-    if not any(key in params for key in ('quota_gb', 'allowed_ips', 'storage_location')):
-        return None, 'Rien à modifier.'
-    if params.get('allowed_ips') == []:
-        return None, 'Au moins une IP autorisée est requise.'
+    else:
+        return None, 'Quota requis (le PUT remplace toute la configuration du bucket).'
+    if error:
+        return None, error
+
+    ips, error = _parse_ips(body.get('allowed_ips', ''))
+    if error:
+        return None, error
+    if not ips:
+        return None, 'Au moins une IP autorisée est requise (le PUT remplace toute la configuration du bucket).'
+    params['allowed_ips'] = ips
+
+    if not _text(body, 'storage_location'):
+        return None, "Storage location requise : son nom, pas l'identifiant renvoyé par l'API."
+    params['storage_location'], error = _parse_location(body['storage_location'])
+    if error:
+        return None, error
     return params, None
 
 
@@ -1416,7 +1438,12 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == '/':
             self._send(200, PAGE, 'text/html; charset=utf-8')
         elif url.path == '/api/info':
-            self._json(200, {'environments': list(self.config.get('environments', []))})
+            locations = self.config.get('storage_locations')
+            self._json(200, {
+                'environments': list(self.config.get('environments', [])),
+                'storage_locations': sorted({v for v in locations.values() if isinstance(v, str)})
+                if isinstance(locations, dict) else [],
+            })
         elif url.path == '/api/bucket/find':
             query = parse_qs(url.query)
             name = (query.get('name') or [''])[0].strip()

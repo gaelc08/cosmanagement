@@ -344,19 +344,23 @@ def get_bucket(config, bucket_name):
 
 
 def update_bucket(config, bucket_name, account_id, quota_gb=None, allowed_ips=None,
-                  storage_location=None, account_meta_name=None):
-    """Change an existing bucket's quota / firewall / storage location.
+                  storage_location=None, account_meta_name=None, quota_bytes=None):
+    """Change an existing bucket (PUT /container/<name>).
 
-    Assumption: an update is a PUT on /container/<name> carrying the fields to
-    change (plus service_instance, as in create_bucket()); check it against the
-    API guide. Only the fields that are not None are sent. Returns
-    (status_code, response_text).
+    The API treats this PUT like the creation one: it rejects a request without
+    a storage location ("Default container vault is not set"), so callers should
+    send the bucket's whole configuration (quota, firewall, storage location by
+    name), not just the field they want to change. `quota_bytes` sends the quota
+    as is; otherwise `quota_gb` is multiplied by 10**9 like create_bucket().
+    Only the fields that are not None are sent. Returns (status_code, response_text).
     """
     headers = build_headers(config)
     if account_meta_name:
         headers['x-Account-Meta-name'] = account_meta_name
     payload = {"service_instance": account_id}
-    if quota_gb is not None:
+    if quota_bytes is not None:
+        payload["hard_quota"] = quota_bytes
+    elif quota_gb is not None:
         payload["hard_quota"] = quota_gb * 1000000000
     if allowed_ips is not None:
         payload["firewall"] = {"allowed_ip": allowed_ips}
