@@ -97,19 +97,41 @@ If the IBM COS API uses a self-signed or custom certificate, you need to:
      buckets to stdout. Add `--output buckets.json` to also write the
      result as `{"account-id": ["bucket1", "bucket2", ...]}`.
 
-### Web UI (`hive_ui.py`)
-A local web interface for everything the command line does, plus a tenant search:
+### Web UI (`cos_ui.py`)
+A local web interface to manage IBM COS storage accounts, buckets and credentials. It is not tied to the Hive naming: accounts, buckets and their settings are whatever you type or load.
 ```bash
-python hive_ui.py            # opens http://127.0.0.1:8765
-python hive_ui.py --port 9000 --no-browser
+python cos_ui.py                   # opens http://127.0.0.1:8765
+python cos_ui.py --port 9000 --no-browser
 ```
-It uses the same `config.json` and credentials as `hive_management.py` and only listens on `127.0.0.1`.
+It only listens on `127.0.0.1`. From `config.json` it only needs the `api` section (`base_url`, SSL settings); credentials come from `.env` / the environment / `secrets.json` as for `hive_management.py`.
 
-- **Recherche**: type a tenant to list the buckets of every account starting with `sa-<tenant>-` (filter box, copy button). Each account has **Récupérer les credentials** (`get_creds` for one account) and **Générer de nouvelles credentials** (`create_creds`, asks for confirmation). Listing is resource-intensive on the API side (one call per account), so it only runs when a search is started.
-- **Créer**: create one storage account (`PUT /accounts/<id>`) or one bucket (`PUT /container/<name>`, same payload as `create_buckets`) from typed-in values: account, exact bucket name, quota in GB, storage location, allowed IPs (one per line or comma-separated, CIDR accepted) and an optional `x-Account-Meta-name` value. Nothing is deduced from `config.json`. Every value is validated server-side and shown in a confirmation dialog before the call is sent.
-- **En masse (config.json)**: what `create_sa`, `create_buckets`, `create_creds` / `get_creds` (and so `create_all`) do, with the environments and steps of your choice. **Prévisualiser** lists exactly what will be sent, **Exécuter le plan** runs it and shows one result per operation. Selecting `prd` asks you to type `prd` first.
+- **Recherche**: type a tenant to list the buckets of every account starting with `sa-<tenant>-` (filter box, copy button). Each bucket has **Voir** (its details, parsed and raw), **Modifier** (quota, storage location, allowed IPs; only the filled fields are sent) and **Supprimer** (irreversible, you must type the bucket name). Each account has **Récupérer les credentials** and **Générer de nouvelles credentials**. Listing is resource-intensive on the API side (one call per account), so it only runs when a search is started.
+- **Créer**: create one storage account (`PUT /accounts/<id>`) or one bucket (`PUT /container/<name>`) from typed-in values: account, exact bucket name, quota in GB, storage location, allowed IPs (one per line or comma-separated, CIDR accepted) and an optional `x-Account-Meta-name` value. Every value is validated server-side and shown in a confirmation dialog before the call is sent.
+- **Création en masse**: create many accounts and buckets from a JSON file that you load (or paste) in the page. **Prévisualiser** lists exactly what will be sent and flags every problem in the file; a file with errors cannot be run. **Exécuter le plan** asks you to type the number of operations, then shows one result per operation. Optionally fetch or generate credentials for the accounts of the file.
+
+Bulk file format; every key is optional and `defaults` fill what a bucket leaves out:
+```json
+{
+  "defaults": {
+    "storage_location": "cv-dev-01",
+    "allowed_ips": ["10.0.0.1", "10.0.0.2"],
+    "quota_gb": 60,
+    "account_meta_name": "dev"
+  },
+  "accounts": [
+    {"id": "sa-fina-0001"}
+  ],
+  "buckets": [
+    {"account": "sa-fina-0001", "name": "fina-docs"},
+    {"account": "sa-fina-0001", "name": "fina-archive", "quota_gb": 200}
+  ]
+}
+```
+A bucket needs `account`, `name`, `quota_gb`, `storage_location` and `allowed_ips`, either of its own or from `defaults`. Accounts referenced by a bucket are not created unless they are listed under `accounts`. If you have a `config.json` in the `hive_management.py` format, **Générer depuis config.json** turns the ticked environments into a bulk file that you can then edit.
 
 Credentials (access/secret keys) are shown in the page, secret masked until revealed, with copy buttons, and are never written to disk by the UI (unlike `create_creds`/`get_creds` on the command line). Errors reported by the API (bad credentials, unreachable host, SSL) are shown under "Détails de l'appel API". Write requests are only accepted as same-origin JSON `POST`s.
+
+**Bucket view / edit / delete:** these use `GET`, `PUT` and `DELETE` on `/container/<name>`. Creating with `PUT` is what `hive_management.py` already does; the other three are the natural REST counterparts and have not been checked against the API guide. If the API answers otherwise, the HTTP status and body are shown in the page, so a mismatch is easy to spot. Try them on a `dev` bucket first.
 
 ## Output
 - **Credentials Files**: The script generates credential files for each bucket in the format `ctie-hive-<bucket_name>` or `ctie-hive-<bucket_name>.json`. Each file contains the access key ID and secret key for the respective environments.

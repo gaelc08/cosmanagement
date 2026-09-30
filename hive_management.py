@@ -324,6 +324,62 @@ def _fetch_credential(session, base_cred_url, headers, project_id, ssl_verify):
         return None
 
 
+def _container_url(config, bucket_name):
+    return f"{config['api']['base_url']}/container/{bucket_name}"
+
+
+def get_bucket(config, bucket_name):
+    """Fetch one bucket's details (GET /container/<name>).
+
+    Assumption: this is the read counterpart of create_bucket()'s PUT on the
+    same URL; check it against the API guide. Returns (status_code,
+    response_text); network failures raise requests.RequestException.
+    """
+    headers = build_headers(config)
+    headers['Accept'] = 'application/json'
+    with requests.Session() as s:
+        response = s.get(_container_url(config, bucket_name), headers=headers,
+                         verify=get_ssl_verify(config), timeout=30)
+    return response.status_code, response.text
+
+
+def update_bucket(config, bucket_name, account_id, quota_gb=None, allowed_ips=None,
+                  storage_location=None, account_meta_name=None):
+    """Change an existing bucket's quota / firewall / storage location.
+
+    Assumption: an update is a PUT on /container/<name> carrying the fields to
+    change (plus service_instance, as in create_bucket()); check it against the
+    API guide. Only the fields that are not None are sent. Returns
+    (status_code, response_text).
+    """
+    headers = build_headers(config)
+    if account_meta_name:
+        headers['x-Account-Meta-name'] = account_meta_name
+    payload = {"service_instance": account_id}
+    if quota_gb is not None:
+        payload["hard_quota"] = quota_gb * 1000000000
+    if allowed_ips is not None:
+        payload["firewall"] = {"allowed_ip": allowed_ips}
+    if storage_location:
+        payload["storage_location"] = storage_location
+    with requests.Session() as s:
+        response = s.put(_container_url(config, bucket_name), headers=headers,
+                         data=json.dumps(payload), verify=get_ssl_verify(config), timeout=30)
+    return response.status_code, response.text
+
+
+def delete_bucket(config, bucket_name):
+    """Delete one bucket (DELETE /container/<name>).
+
+    Assumption: plain REST delete on the bucket URL; check it against the API
+    guide. Returns (status_code, response_text).
+    """
+    with requests.Session() as s:
+        response = s.delete(_container_url(config, bucket_name), headers=build_headers(config),
+                            verify=get_ssl_verify(config), timeout=30)
+    return response.status_code, response.text
+
+
 def request_credential_for(config, project_id):
     """Generate a new credential for one account. Returns the export dict or None."""
     with requests.Session() as s:

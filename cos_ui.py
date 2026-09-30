@@ -1,22 +1,33 @@
 #!/usr/bin/env python3
 """
-Local web UI for the Hive / IBM COS management tasks of hive_management.py.
+Local web UI to manage IBM COS storage accounts, buckets and credentials.
 
 Usage:
-    python hive_ui.py                 # http://127.0.0.1:8765, opens the browser
-    python hive_ui.py --port 9000 --no-browser
+    python cos_ui.py                        # http://127.0.0.1:8765, opens the browser
+    python cos_ui.py --port 9000 --no-browser
 
 Tabs:
-  Recherche   list the buckets of every account starting with sa-<tenant>-,
-              fetch or generate an account's credentials
-  Créer       create one storage account, or one bucket, from typed-in values
-  En masse    what create_sa / create_buckets / create_creds / get_creds do
-              from config.json, with a preview and a per-item result
+  Recherche          list the buckets of every account starting with sa-<tenant>-;
+                     view, edit or delete a bucket; fetch or generate an
+                     account's credentials
+  Créer              create one storage account, or one bucket, from typed-in values
+  Création en masse  create many accounts / buckets from a JSON file that you load
+                     or paste in the page (format below), with a preview and a
+                     per-item result
 
-Same setup as hive_management.py: config.json next to the script, credentials
-from .env / environment / secrets.json (see load_auth_header()). The server
-only listens on 127.0.0.1. Credentials (access/secret keys) are shown in the
-page for copying and are never written to disk by the UI.
+Bulk file format (every key is optional, `defaults` fill what a bucket omits):
+    {
+      "defaults": {"storage_location": "...", "allowed_ips": ["10.0.0.1"],
+                   "quota_gb": 60, "account_meta_name": "..."},
+      "accounts": [{"id": "sa-fina-0001", "account_meta_name": "..."}],
+      "buckets":  [{"account": "sa-fina-0001", "name": "fina-docs", "quota_gb": 100}]
+    }
+
+config.json (next to the script) only needs the `api` section (base_url, SSL);
+credentials come from .env / environment / secrets.json (see
+hive_management.load_auth_header()). The server only listens on 127.0.0.1.
+Credentials (access/secret keys) are shown in the page for copying and are
+never written to disk by the UI.
 
 Listing the buckets of an account is flagged as resource-intensive by the API
 guide, so a search only runs on demand, one account at a time, and the API is
@@ -41,11 +52,18 @@ import hive_management as hm
 
 TENANT_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$')
 ACCOUNT_RE = re.compile(r'^sa-[A-Za-z0-9][A-Za-z0-9_-]{0,127}$')
-BUCKET_RE = re.compile(r'^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$')
+BUCKET_RE = re.compile(r'^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$')          # names we create
+BUCKET_NAME_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$')     # names that already exist
 LABEL_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
 MAX_QUOTA_GB = 1_000_000
-MAX_BODY = 64 * 1024
+MAX_BODY = 1024 * 1024
+CREATED = (201,)
+DONE = (200, 201, 202, 204)
 MSG_NO_CREDS = 'Identifiants introuvables (voir les détails).'
+BULK_KEYS = {'defaults', 'accounts', 'buckets'}
+DEFAULT_KEYS = {'storage_location', 'allowed_ips', 'quota_gb', 'account_meta_name'}
+BUCKET_KEYS = DEFAULT_KEYS | {'account', 'name'}
+ACCOUNT_KEYS = {'id', 'account_meta_name'}
 _api_lock = threading.Lock()
 
 PAGE = r"""<!doctype html>
@@ -53,7 +71,7 @@ PAGE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Hive management</title>
+<title>COS management</title>
 <style>
   :root { --bg:#fff; --fg:#1b1f24; --muted:#6a737d; --card:#f6f8fa; --line:#d0d7de; --accent:#0969da; --err:#cf222e; --ok:#1a7f37; }
   @media (prefers-color-scheme: dark) {
@@ -70,7 +88,8 @@ PAGE = r"""<!doctype html>
                                     background:var(--bg); color:var(--fg); }
   button { cursor:pointer; background:var(--accent); border-color:var(--accent); color:#fff; }
   button.secondary { background:var(--bg); color:var(--fg); border-color:var(--line); }
-  button.small { padding:2px 8px; font-size:13px; }
+  button.danger { background:var(--bg); color:var(--err); border-color:var(--err); }
+  button.small { padding:1px 8px; font-size:12px; }
   button:disabled { opacity:.6; cursor:not-allowed; }
   [hidden] { display:none !important; }
 
@@ -88,6 +107,8 @@ PAGE = r"""<!doctype html>
   .account h2 { font:600 14px ui-monospace, monospace; margin:0 0 6px; display:flex; justify-content:space-between; gap:8px; }
   .account h2 span { color:var(--muted); font-weight:400; }
   .account ul { margin:0; padding-left:18px; font-family: ui-monospace, monospace; font-size:13px; }
+  .account li { margin:3px 0; }
+  .account li button { margin-left:6px; font-family:system-ui, sans-serif; }
   .account .actions { margin-top:8px; display:flex; gap:6px; flex-wrap:wrap; }
   .empty { color:var(--muted); font-size:13px; }
 
@@ -95,16 +116,21 @@ PAGE = r"""<!doctype html>
   .grid-form label { padding-top:7px; }
   .grid-form small { color:var(--muted); grid-column:2; margin-top:-4px; }
   .grid-form textarea, .grid-form select, .grid-form input[type=text] { width:100%; }
-  .grid-form button { grid-column:2; justify-self:start; }
-  @media (max-width: 560px) { .grid-form { grid-template-columns:1fr; } .grid-form small, .grid-form button { grid-column:1; } }
+  .grid-form .buttons { grid-column:2; display:flex; gap:8px; }
+  .grid-form button { justify-self:start; }
+  @media (max-width: 560px) { .grid-form { grid-template-columns:1fr; } .grid-form small, .grid-form .buttons { grid-column:1; } }
   fieldset { border:1px solid var(--line); border-radius:8px; margin:0 0 12px; padding:8px 12px; }
   fieldset label { margin-right:16px; display:inline-block; }
+  #b-doc { width:100%; font:13px/1.4 ui-monospace, monospace; white-space:pre; overflow:auto; }
+  .row-buttons { display:flex; gap:8px; flex-wrap:wrap; margin:8px 0; }
 
   table { border-collapse:collapse; width:100%; font-size:13px; margin:6px 0 12px; }
   th, td { text-align:left; padding:4px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
   td.ok { color:var(--ok); } td.fail { color:var(--err); }
+  .err-list { color:var(--err); font-size:13px; margin:6px 0; }
 
-  #creds { background:var(--card); border:1px solid var(--accent); border-radius:8px; padding:10px 14px; margin:12px 0; }
+  .panel { background:var(--card); border:1px solid var(--accent); border-radius:8px; padding:10px 14px; margin:12px 0; }
+  .panel pre { max-height:260px; overflow:auto; }
   #creds .cred { margin:8px 0 12px; }
   #creds .row { display:flex; gap:8px; align-items:center; margin:2px 0; flex-wrap:wrap; }
   #creds .row .k { width:110px; color:var(--muted); }
@@ -116,14 +142,15 @@ PAGE = r"""<!doctype html>
 </head>
 <body>
 <main>
-  <h1>Hive management</h1>
+  <h1>COS management</h1>
   <nav id="tabs">
     <button type="button" class="active" data-tab="search">Recherche</button>
     <button type="button" data-tab="create">Créer</button>
-    <button type="button" data-tab="bulk">En masse (config.json)</button>
+    <button type="button" data-tab="bulk">Création en masse</button>
   </nav>
   <div id="status"></div>
-  <div id="creds" hidden></div>
+  <div id="creds" class="panel" hidden></div>
+  <div id="bucket-panel" class="panel" hidden></div>
 
   <section id="tab-search">
     <form id="search">
@@ -148,7 +175,7 @@ PAGE = r"""<!doctype html>
       <small>sa-&lt;tenant&gt;-&lt;suffixe&gt;</small>
       <label for="a-meta">x-Account-Meta-name</label>
       <input type="text" id="a-meta" placeholder="facultatif">
-      <button type="submit" id="a-go">Créer le compte</button>
+      <div class="buttons"><button type="submit" id="a-go">Créer le compte</button></div>
     </form>
 
     <h3>Créer un bucket</h3>
@@ -157,33 +184,38 @@ PAGE = r"""<!doctype html>
       <input type="text" id="c-account" required list="accounts-list" maxlength="132" placeholder="ex. sa-fina-0001">
       <datalist id="accounts-list"></datalist>
       <label for="c-bucket">Nom du bucket</label>
-      <input type="text" id="c-bucket" required maxlength="63" placeholder="ex. ctie-hive-dev-fina">
+      <input type="text" id="c-bucket" required maxlength="63" placeholder="ex. fina-docs">
       <small>3 à 63 caractères : minuscules, chiffres, - et .</small>
       <label for="c-quota">Quota (Go)</label>
       <input type="text" id="c-quota" required inputmode="numeric" placeholder="ex. 60">
       <label for="c-location">Storage location</label>
-      <input type="text" id="c-location" required placeholder="ex. cv-ctie-hive-dev-01">
+      <input type="text" id="c-location" required placeholder="ex. cv-dev-01">
       <label for="c-ips">IP autorisées</label>
       <textarea id="c-ips" rows="4" required placeholder="Une IP (ou CIDR) par ligne, ou séparées par des virgules"></textarea>
       <label for="c-meta">x-Account-Meta-name</label>
-      <input type="text" id="c-meta" placeholder="ex. ctie-hive-dev (facultatif)">
-      <button type="submit" id="c-go">Créer le bucket</button>
+      <input type="text" id="c-meta" placeholder="facultatif">
+      <div class="buttons"><button type="submit" id="c-go">Créer le bucket</button></div>
     </form>
   </section>
 
   <section id="tab-bulk" hidden>
-    <p class="empty">Reprend ce que font <code>create_sa</code>, <code>create_buckets</code>, <code>create_creds</code> et <code>get_creds</code>
-    en ligne de commande, d'après <code>config.json</code>. Les credentials s'affichent dans la page et ne sont pas écrites sur disque.</p>
-    <fieldset><legend>Environnements</legend><div id="b-envs"></div></fieldset>
-    <fieldset><legend>Étapes</legend>
-      <label><input type="checkbox" id="b-accounts" checked> Storage accounts</label>
-      <label><input type="checkbox" id="b-buckets" checked> Buckets</label>
-      <div>
-        Credentials :
-        <label><input type="radio" name="b-creds" value="none" checked> aucune</label>
-        <label><input type="radio" name="b-creds" value="get"> récupérer l'existante</label>
-        <label><input type="radio" name="b-creds" value="create"> générer une nouvelle</label>
-      </div>
+    <p class="empty">Crée plusieurs comptes et buckets d'après un fichier de configuration JSON. Charge un fichier, colle son contenu, ou
+    pars de l'exemple, puis prévisualise avant d'exécuter. Format : <code>defaults</code> (valeurs par défaut des buckets),
+    <code>accounts</code> (comptes à créer) et <code>buckets</code> (buckets à créer).</p>
+    <div class="row-buttons">
+      <button type="button" class="secondary" id="b-load">Charger un fichier JSON...</button>
+      <input type="file" id="b-file" accept=".json,application/json" hidden>
+      <button type="button" class="secondary" id="b-example">Insérer un exemple</button>
+    </div>
+    <fieldset id="b-legacy" hidden><legend>Générer depuis config.json (format hive_management.py)</legend>
+      <div id="b-envs"></div>
+      <button type="button" class="secondary" id="b-expand">Générer le fichier</button>
+    </fieldset>
+    <textarea id="b-doc" rows="16" spellcheck="false" placeholder='{"accounts": [...], "buckets": [...]}'></textarea>
+    <fieldset><legend>Credentials pour les comptes du fichier</legend>
+      <label><input type="radio" name="b-creds" value="none" checked> aucune</label>
+      <label><input type="radio" name="b-creds" value="get"> récupérer l'existante</label>
+      <label><input type="radio" name="b-creds" value="create"> générer une nouvelle</label>
     </fieldset>
     <button type="button" id="b-preview">Prévisualiser</button>
     <button type="button" id="b-run" disabled>Exécuter le plan</button>
@@ -218,6 +250,21 @@ PAGE = r"""<!doctype html>
     return out;
   }
 
+  function table(headers, rows) {
+    const t = el('table');
+    const head = el('tr');
+    for (const h of headers) head.append(el('th', h));
+    t.append(head);
+    for (const row of rows) {
+      const tr = el('tr');
+      for (const cell of row) {
+        tr.append(el('td', typeof cell === 'object' ? cell.text : cell, typeof cell === 'object' ? cell.cls : undefined));
+      }
+      t.append(tr);
+    }
+    return t;
+  }
+
   // ---- tabs ---------------------------------------------------------------
   document.querySelectorAll('#tabs button').forEach(b => b.addEventListener('click', () => {
     document.querySelectorAll('#tabs button').forEach(x => x.classList.toggle('active', x === b));
@@ -237,7 +284,7 @@ PAGE = r"""<!doctype html>
     box.append(el('strong', 'Credentials (affichées ici seulement, rien n\'est écrit sur disque)'));
     for (const c of list) {
       const wrap = el('div', undefined, 'cred');
-      wrap.append(el('div', c.account + (c.env ? ' (' + c.env + ')' : ''), 'mono'));
+      wrap.append(el('div', c.account, 'mono'));
 
       const r1 = el('div', undefined, 'row');
       r1.append(el('span', 'Access key ID', 'k'), el('span', c.access_key_id, 'v'));
@@ -273,6 +320,116 @@ PAGE = r"""<!doctype html>
     box.scrollIntoView({block: 'nearest'});
   }
 
+  // ---- bucket panel: view / edit / delete --------------------------------------
+  function flatten(value, path, rows) {
+    if (value !== null && typeof value === 'object') {
+      const entries = Array.isArray(value) ? value.map((v, i) => [i, v]) : Object.entries(value);
+      if (!entries.length) rows.push([path, Array.isArray(value) ? '[]' : '{}']);
+      for (const [k, v] of entries) flatten(v, path ? path + '.' + k : String(k), rows);
+    } else {
+      rows.push([path, String(value)]);
+    }
+    return rows;
+  }
+
+  function findKey(value, key) {
+    if (value === null || typeof value !== 'object') return undefined;
+    if (!Array.isArray(value) && key in value) return value[key];
+    for (const v of Object.values(value)) {
+      const found = findKey(v, key);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+
+  function closeBucketPanel() { $('bucket-panel').textContent = ''; $('bucket-panel').hidden = true; }
+
+  function panelHeader(title) {
+    const box = $('bucket-panel');
+    box.textContent = '';
+    box.append(el('strong', title));
+    box.hidden = false;
+    return box;
+  }
+
+  async function openBucket(account, bucket, mode) {
+    setStatus('Lecture du bucket ' + bucket + '...', false);
+    const out = await post('/api/bucket/get', {bucket});
+    showLog(out.log);
+    const ok = !out.error && out.ok;
+    setStatus(ok ? '' : (out.error || out.message), !ok);
+    const box = panelHeader((mode === 'edit' ? 'Modifier le bucket ' : 'Bucket ') + bucket + ' (' + account + ')');
+
+    if (mode === 'view') {
+      if (ok) {
+        const rows = out.details !== null && typeof out.details === 'object' ? flatten(out.details, '', []) : [];
+        if (rows.length) box.append(table(['Champ', 'Valeur'], rows));
+        const raw = el('details');
+        raw.append(el('summary', 'Réponse brute'), el('pre', out.raw));
+        box.append(raw);
+      }
+      const close = el('button', 'Fermer', 'small secondary');
+      close.addEventListener('click', closeBucketPanel);
+      box.append(close);
+      return;
+    }
+
+    // edit: prefill from what the API returned, when it can be read
+    const details = ok ? out.details : null;
+    const quota = findKey(details, 'hard_quota');
+    const ips = findKey(details, 'allowed_ip');
+    const location = findKey(details, 'storage_location');
+    if (!ok) box.append(el('div', 'Détails illisibles : remplis seulement ce que tu veux changer.', 'empty'));
+    else box.append(el('div', 'Seuls les champs renseignés sont envoyés.', 'empty'));
+
+    const form = el('form', undefined, 'grid-form');
+    form.autocomplete = 'off';
+    const fQuota = el('input'); fQuota.type = 'text'; fQuota.inputMode = 'numeric';
+    fQuota.value = typeof quota === 'number' ? String(Math.round(quota / 1e9 * 100) / 100) : '';
+    const fLoc = el('input'); fLoc.type = 'text'; fLoc.value = typeof location === 'string' ? location : '';
+    const fIps = el('textarea'); fIps.rows = 4; fIps.value = Array.isArray(ips) ? ips.join('\n') : '';
+    for (const [label, field] of [['Quota (Go)', fQuota], ['Storage location', fLoc], ['IP autorisées', fIps]]) {
+      form.append(el('label', label), field);
+    }
+    const buttons = el('div', undefined, 'buttons');
+    const save = el('button', 'Enregistrer'); save.type = 'submit';
+    const cancel = el('button', 'Annuler', 'secondary'); cancel.type = 'button';
+    cancel.addEventListener('click', closeBucketPanel);
+    buttons.append(save, cancel);
+    form.append(buttons);
+    form.addEventListener('submit', async e => {
+      e.preventDefault();
+      const body = {account, bucket, quota_gb: fQuota.value.trim(), storage_location: fLoc.value.trim(), allowed_ips: fIps.value};
+      const ipCount = body.allowed_ips.split(/[\s,;]+/).filter(Boolean).length;
+      const summary = 'Modifier le bucket "' + bucket + '"\n' +
+        '  quota : ' + (body.quota_gb || '(inchangé)') + (body.quota_gb ? ' Go' : '') + '\n' +
+        '  storage location : ' + (body.storage_location || '(inchangée)') + '\n' +
+        '  IP autorisées : ' + (ipCount ? ipCount : '(inchangées)');
+      if (!confirm(summary)) return;
+      save.disabled = true;
+      setStatus('Modification en cours...', false);
+      const res = await post('/api/bucket/update', body);
+      save.disabled = false;
+      if (res.log) showLog(res.log);
+      const done = !res.error && res.ok;
+      setStatus(res.error || res.message, !done);
+      if (done) { closeBucketPanel(); if (lastTenant) await runSearch(lastTenant, true); }
+    });
+    box.append(form);
+  }
+
+  async function deleteBucket(account, bucket) {
+    const typed = prompt('Supprimer définitivement le bucket "' + bucket + '" (compte ' + account + ').\n' +
+                         'Cette action est irréversible. Tape le nom du bucket pour confirmer.');
+    if (typed !== bucket) { setStatus('Suppression annulée.', false); return; }
+    setStatus('Suppression en cours...', false);
+    const out = await post('/api/bucket/delete', {bucket, confirm: typed});
+    if (out.log) showLog(out.log);
+    const ok = !out.error && out.ok;
+    setStatus(out.error || out.message, !ok);
+    if (ok) { closeBucketPanel(); if (lastTenant) await runSearch(lastTenant, true); }
+  }
+
   // ---- search ---------------------------------------------------------------
   function render() {
     const q = $('filter').value.trim().toLowerCase();
@@ -287,7 +444,16 @@ PAGE = r"""<!doctype html>
       card.append(h);
       if (list.length) {
         const ul = el('ul');
-        for (const b of list) ul.append(el('li', b));
+        for (const b of list) {
+          const li = el('li');
+          li.append(b);
+          for (const [act, label, cls] of [['view', 'Voir', 'secondary'], ['edit', 'Modifier', 'secondary'], ['delete', 'Supprimer', 'danger']]) {
+            const btn = el('button', label, 'small ' + cls);
+            btn.dataset.act = act; btn.dataset.bucket = b; btn.dataset.account = account;
+            li.append(btn);
+          }
+          ul.append(li);
+        }
         card.append(ul);
       } else {
         card.append(el('div', 'Aucun bucket', 'empty'));
@@ -307,6 +473,13 @@ PAGE = r"""<!doctype html>
   $('filter').addEventListener('input', render);
 
   $('results').addEventListener('click', async e => {
+    const act = e.target.closest('button[data-act]');
+    if (act) {
+      const {account, bucket} = act.dataset;
+      if (act.dataset.act === 'delete') await deleteBucket(account, bucket);
+      else await openBucket(account, bucket, act.dataset.act);
+      return;
+    }
     const b = e.target.closest('button[data-cred]');
     if (!b) return;
     const account = b.dataset.account, mode = b.dataset.cred;
@@ -421,101 +594,128 @@ PAGE = r"""<!doctype html>
     }
   });
 
-  // ---- bulk (config.json) ------------------------------------------------------
-  let plannedOptions = null;
+  // ---- bulk creation from a JSON file --------------------------------------------
+  let plannedKey = null;
+  let plannedCount = 0;
 
-  function bulkOptions() {
-    return {
-      environments: [...document.querySelectorAll('#b-envs input:checked')].map(i => i.value),
-      accounts: $('b-accounts').checked,
-      buckets: $('b-buckets').checked,
-      credentials: document.querySelector('input[name=b-creds]:checked').value,
-    };
+  function bulkRequest() {
+    const text = $('b-doc').value.trim();
+    if (!text) throw new Error('Le fichier de configuration est vide.');
+    let document_;
+    try { document_ = JSON.parse(text); } catch (e) { throw new Error('JSON invalide : ' + e.message); }
+    return {document: document_, credentials: document.querySelector('input[name=b-creds]:checked').value};
   }
 
   function invalidatePlan() {
-    plannedOptions = null;
+    plannedKey = null;
     $('b-run').disabled = true;
     $('b-plan').textContent = '';
   }
 
-  function table(headers, rows) {
-    const t = el('table');
-    const head = el('tr');
-    for (const h of headers) head.append(el('th', h));
-    t.append(head);
-    for (const row of rows) {
-      const tr = el('tr');
-      for (const cell of row) {
-        tr.append(el('td', typeof cell === 'object' ? cell.text : cell, typeof cell === 'object' ? cell.cls : undefined));
-      }
-      t.append(tr);
-    }
-    return t;
-  }
+  $('b-doc').addEventListener('input', invalidatePlan);
+  document.querySelectorAll('input[name=b-creds]').forEach(r => r.addEventListener('change', invalidatePlan));
+
+  $('b-load').addEventListener('click', () => $('b-file').click());
+  $('b-file').addEventListener('change', () => {
+    const file = $('b-file').files[0];
+    if (!file) return;
+    if (file.size > 1024 * 1024) { setStatus('Fichier trop volumineux (1 Mo maximum).', true); return; }
+    const reader = new FileReader();
+    reader.onload = () => {
+      $('b-doc').value = String(reader.result);
+      invalidatePlan();
+      setStatus('Fichier "' + file.name + '" chargé. Prévisualise avant d\'exécuter.', false);
+    };
+    reader.onerror = () => setStatus('Lecture du fichier impossible.', true);
+    reader.readAsText(file);
+    $('b-file').value = '';
+  });
+
+  $('b-example').addEventListener('click', () => {
+    $('b-doc').value = JSON.stringify({
+      defaults: {storage_location: 'cv-dev-01', allowed_ips: ['10.0.0.1', '10.0.0.2'], quota_gb: 60, account_meta_name: 'dev'},
+      accounts: [{id: 'sa-fina-0001'}],
+      buckets: [
+        {account: 'sa-fina-0001', name: 'fina-docs'},
+        {account: 'sa-fina-0001', name: 'fina-archive', quota_gb: 200},
+      ],
+    }, null, 2);
+    invalidatePlan();
+  });
 
   async function loadInfo() {
     try {
       const info = await (await fetch('/api/info')).json();
+      const envs = info.environments || [];
+      $('b-legacy').hidden = !envs.length;
       const box = $('b-envs');
       box.textContent = '';
-      for (const env of info.environments || []) {
+      for (const env of envs) {
         const label = el('label');
         const cb = el('input');
         cb.type = 'checkbox'; cb.value = env; cb.checked = env !== 'prd';
-        cb.addEventListener('change', invalidatePlan);
         label.append(cb, ' ' + env);
         box.append(label);
       }
     } catch (err) { setStatus('Impossible de lire la configuration : ' + err, true); }
   }
 
-  for (const id of ['b-accounts', 'b-buckets']) $(id).addEventListener('change', invalidatePlan);
-  document.querySelectorAll('input[name=b-creds]').forEach(r => r.addEventListener('change', invalidatePlan));
+  $('b-expand').addEventListener('click', async () => {
+    const environments = [...document.querySelectorAll('#b-envs input:checked')].map(i => i.value);
+    const out = await post('/api/bulk/expand', {environments});
+    if (out.error) { setStatus(out.error, true); return; }
+    $('b-doc').value = JSON.stringify(out.document, null, 2);
+    invalidatePlan();
+    setStatus('Fichier généré depuis config.json.' + (out.warnings.length ? ' ' + out.warnings.join(' ') : ''), out.warnings.length > 0);
+  });
 
   $('b-preview').addEventListener('click', async () => {
     invalidatePlan();
     $('b-result').textContent = '';
-    const opts = bulkOptions();
+    let req;
+    try { req = bulkRequest(); } catch (err) { setStatus(err.message, true); return; }
     setStatus('Calcul du plan...', false);
-    const out = await post('/api/bulk/plan', opts);
+    const out = await post('/api/bulk/plan', req);
     if (out.error) { setStatus(out.error, true); return; }
     const plan = out.plan, box = $('b-plan');
     const total = plan.accounts.length + plan.buckets.length + plan.credentials.length;
-    setStatus(total + ' opération(s) prévue(s).' + (plan.errors.length ? ' ' + plan.errors.length + ' avertissement(s).' : ''), plan.errors.length > 0);
+    setStatus(plan.errors.length
+      ? plan.errors.length + ' erreur(s) dans le fichier : corrige-les pour pouvoir exécuter.'
+      : total + ' opération(s) prévue(s).', plan.errors.length > 0);
+    if (plan.errors.length) {
+      const list = el('div', undefined, 'err-list');
+      for (const e of plan.errors) list.append(el('div', e));
+      box.append(list);
+    }
     if (plan.accounts.length) {
       box.append(el('h3', 'Storage accounts (' + plan.accounts.length + ')'));
-      box.append(table(['Env', 'Compte', 'x-Account-Meta-name'], plan.accounts.map(a => [a.env, a.account_id, a.account_meta_name])));
+      box.append(table(['Compte', 'x-Account-Meta-name'], plan.accounts.map(a => [a.account_id, a.account_meta_name || ''])));
     }
     if (plan.buckets.length) {
       box.append(el('h3', 'Buckets (' + plan.buckets.length + ')'));
-      box.append(table(['Env', 'Compte', 'Bucket', 'Quota (Go)', 'Storage location', 'IP'],
-        plan.buckets.map(b => [b.env, b.account_id, b.bucket_name, String(b.quota_gb), b.storage_location, String(b.ip_count)])));
+      box.append(table(['Compte', 'Bucket', 'Quota (Go)', 'Storage location', 'IP'],
+        plan.buckets.map(b => [b.account_id, b.bucket_name, String(b.quota_gb), b.storage_location, String(b.ip_count)])));
     }
     if (plan.credentials.length) {
-      box.append(el('h3', (opts.credentials === 'create' ? 'Nouvelles credentials' : 'Credentials existantes') + ' (' + plan.credentials.length + ')'));
-      box.append(table(['Env', 'Compte'], plan.credentials.map(c => [c.env, c.account_id])));
+      box.append(el('h3', (req.credentials === 'create' ? 'Nouvelles credentials' : 'Credentials existantes') + ' (' + plan.credentials.length + ')'));
+      box.append(table(['Compte'], plan.credentials.map(c => [c.account_id])));
     }
-    for (const w of plan.errors) box.append(el('div', w, 'empty'));
-    if (total) { plannedOptions = JSON.stringify(opts); $('b-run').disabled = false; }
+    if (total && !plan.errors.length) { plannedKey = JSON.stringify(req); plannedCount = total; $('b-run').disabled = false; }
   });
 
   $('b-run').addEventListener('click', async () => {
-    const opts = bulkOptions();
-    if (JSON.stringify(opts) !== plannedOptions) { invalidatePlan(); setStatus('Les options ont changé : prévisualise de nouveau.', true); return; }
-    const parts = [];
-    if (opts.accounts) parts.push('storage accounts');
-    if (opts.buckets) parts.push('buckets');
-    if (opts.credentials === 'create') parts.push('génération de nouvelles credentials');
-    if (opts.credentials === 'get') parts.push('récupération des credentials');
-    if (!confirm('Exécuter : ' + parts.join(', ') + '\nEnvironnements : ' + opts.environments.join(', '))) return;
-    if (opts.environments.includes('prd') && prompt('Production sélectionnée. Tape prd pour confirmer.') !== 'prd') {
+    let req;
+    try { req = bulkRequest(); } catch (err) { setStatus(err.message, true); return; }
+    if (JSON.stringify(req) !== plannedKey) { invalidatePlan(); setStatus('Le fichier a changé : prévisualise de nouveau.', true); return; }
+    const n = String(plannedCount);
+    if (!confirm('Exécuter ' + n + ' opération(s) d\'après ce fichier ?')) return;
+    if (prompt('Tape ' + n + ' (le nombre d\'opérations) pour confirmer.') !== n) {
       setStatus('Exécution annulée.', false);
       return;
     }
     $('b-run').disabled = true; $('b-preview').disabled = true;
     setStatus('Exécution en cours (un appel API par opération)...', false);
-    const out = await post('/api/bulk/run', opts);
+    const out = await post('/api/bulk/run', req);
     $('b-preview').disabled = false;
     if (out.log) showLog(out.log);
     if (out.error) { setStatus(out.error, true); return; }
@@ -577,19 +777,27 @@ def search_tenant(config, tenant):
     }
 
 
-def _write_outcome(thunk, ok_message):
-    """Run a (status, text) write call; returns (ok, message)."""
+def _http(thunk):
+    """Run a (status, text) API call. Returns (status, text, error); status is None on a network error."""
     try:
         status, text = thunk()
     except requests.RequestException as err:
-        return False, f'Erreur réseau : {err}'
-    if status == 201:
+        return None, '', f'Erreur réseau : {err}'
+    return status, text, None
+
+
+def _write_outcome(thunk, ok_message, ok_statuses=CREATED):
+    """Run a write call; returns (ok, message)."""
+    status, text, error = _http(thunk)
+    if error:
+        return False, error
+    if status in ok_statuses:
         return True, ok_message
     return False, f'Échec : HTTP {status} - {text[:500]}'
 
 
-def _run_write(thunk, ok_message):
-    outcome, log, aborted = call_api(lambda: _write_outcome(thunk, ok_message))
+def _run_write(thunk, ok_message, ok_statuses=CREATED):
+    outcome, log, aborted = call_api(lambda: _write_outcome(thunk, ok_message, ok_statuses))
     ok, message = (False, MSG_NO_CREDS) if aborted else outcome
     return {'ok': ok, 'message': message, 'log': log}
 
@@ -603,12 +811,49 @@ def _valid_account(body):
     return account if ACCOUNT_RE.match(account) else None
 
 
-def _valid_meta(body):
+def _valid_meta(value):
     """Optional x-Account-Meta-name. Returns (value_or_None, error)."""
-    meta = _text(body, 'account_meta_name')
+    meta = str(value or '').strip()
     if meta and not LABEL_RE.match(meta):
         return None, "Valeur invalide pour l'en-tête x-Account-Meta-name."
     return meta or None, None
+
+
+def _parse_quota(value):
+    """Quota in GB from an int or a numeric string. Returns (int, error)."""
+    if isinstance(value, bool):
+        return None, 'Quota invalide (nombre entier de Go).'
+    try:
+        quota = int(str(value).strip())
+    except ValueError:
+        return None, 'Quota invalide (nombre entier de Go).'
+    if not 1 <= quota <= MAX_QUOTA_GB:
+        return None, f'Quota invalide (entre 1 et {MAX_QUOTA_GB} Go).'
+    return quota, None
+
+
+def _parse_ips(value):
+    """IPs / CIDRs from a list or a separated string. Returns (list, error); an empty list is not an error."""
+    if isinstance(value, str):
+        raws = re.split(r'[\s,;]+', value.strip())
+    elif isinstance(value, list) and all(isinstance(v, str) for v in value):
+        raws = [v.strip() for v in value]
+    else:
+        return None, 'Liste d\'IP invalide.'
+    ips = []
+    for raw in filter(None, raws):
+        try:
+            ipaddress.ip_network(raw, strict=False)
+        except ValueError:
+            return None, f'Adresse IP invalide : {raw[:64]}'
+        if raw not in ips:
+            ips.append(raw)
+    return ips, None
+
+
+def _parse_location(value):
+    location = str(value or '').strip()
+    return (location, None) if LABEL_RE.match(location) else (None, 'Storage location invalide.')
 
 
 def parse_create_bucket(body):
@@ -616,37 +861,23 @@ def parse_create_bucket(body):
     account = _valid_account(body)
     if not account:
         return None, 'Compte invalide (attendu : sa-<tenant>-<suffixe>).'
-
     bucket = _text(body, 'bucket')
     if not BUCKET_RE.match(bucket):
         return None, 'Nom de bucket invalide (3 à 63 caractères : minuscules, chiffres, - et .).'
-
-    try:
-        quota_gb = int(_text(body, 'quota_gb'))
-    except ValueError:
-        return None, 'Quota invalide (nombre entier de Go).'
-    if not 1 <= quota_gb <= MAX_QUOTA_GB:
-        return None, f'Quota invalide (entre 1 et {MAX_QUOTA_GB} Go).'
-
-    location = _text(body, 'storage_location')
-    if not LABEL_RE.match(location):
-        return None, 'Storage location invalide.'
-
-    ips = []
-    for raw in filter(None, re.split(r'[\s,;]+', _text(body, 'allowed_ips'))):
-        try:
-            ipaddress.ip_network(raw, strict=False)
-        except ValueError:
-            return None, f'Adresse IP invalide : {raw[:64]}'
-        if raw not in ips:
-            ips.append(raw)
-    if not ips:
-        return None, 'Au moins une IP autorisée est requise.'
-
-    meta, error = _valid_meta(body)
+    quota_gb, error = _parse_quota(body.get('quota_gb', ''))
     if error:
         return None, error
-
+    location, error = _parse_location(body.get('storage_location'))
+    if error:
+        return None, error
+    ips, error = _parse_ips(body.get('allowed_ips', ''))
+    if error:
+        return None, error
+    if not ips:
+        return None, 'Au moins une IP autorisée est requise.'
+    meta, error = _valid_meta(body.get('account_meta_name'))
+    if error:
+        return None, error
     return {
         'account_id': account,
         'bucket_name': bucket,
@@ -667,11 +898,86 @@ def handle_create_bucket(config, body):
     )
 
 
+def _existing_bucket(body):
+    name = _text(body, 'bucket')
+    return name if BUCKET_NAME_RE.match(name) else None
+
+
+def handle_get_bucket(config, body):
+    bucket = _existing_bucket(body)
+    if not bucket:
+        return 400, {'error': 'Nom de bucket invalide.'}
+    result, log, aborted = call_api(lambda: _http(lambda: hm.get_bucket(config, bucket)))
+    if aborted:
+        return 200, {'ok': False, 'message': MSG_NO_CREDS, 'log': log}
+    status, text, error = result
+    if error or status != 200:
+        return 200, {'ok': False, 'log': log, 'message': error or f'Échec : HTTP {status} - {text[:500]}'}
+    try:
+        details = json.loads(text)
+    except json.JSONDecodeError:
+        details = None
+    return 200, {'ok': True, 'details': details, 'raw': text[:20000], 'log': log}
+
+
+def parse_update_bucket(body):
+    """Validate the JSON body of POST /api/bucket/update. Blank fields are left unchanged."""
+    bucket = _existing_bucket(body)
+    if not bucket:
+        return None, 'Nom de bucket invalide.'
+    account = _valid_account(body)
+    if not account:
+        return None, 'Compte invalide (attendu : sa-<tenant>-<suffixe>).'
+    params = {'bucket_name': bucket, 'account_id': account}
+
+    if _text(body, 'quota_gb'):
+        params['quota_gb'], error = _parse_quota(body['quota_gb'])
+        if error:
+            return None, error
+    if _text(body, 'allowed_ips'):
+        params['allowed_ips'], error = _parse_ips(body['allowed_ips'])
+        if error:
+            return None, error
+    if _text(body, 'storage_location'):
+        params['storage_location'], error = _parse_location(body['storage_location'])
+        if error:
+            return None, error
+    if not any(key in params for key in ('quota_gb', 'allowed_ips', 'storage_location')):
+        return None, 'Rien à modifier.'
+    if params.get('allowed_ips') == []:
+        return None, 'Au moins une IP autorisée est requise.'
+    return params, None
+
+
+def handle_update_bucket(config, body):
+    params, error = parse_update_bucket(body)
+    if error:
+        return 400, {'error': error}
+    return 200, _run_write(
+        lambda: hm.update_bucket(config, **params),
+        f"Bucket {params['bucket_name']} modifié.",
+        DONE,
+    )
+
+
+def handle_delete_bucket(config, body):
+    bucket = _existing_bucket(body)
+    if not bucket:
+        return 400, {'error': 'Nom de bucket invalide.'}
+    if _text(body, 'confirm') != bucket:
+        return 400, {'error': 'Confirmation incorrecte : tape le nom exact du bucket.'}
+    return 200, _run_write(
+        lambda: hm.delete_bucket(config, bucket),
+        f'Bucket {bucket} supprimé.',
+        DONE,
+    )
+
+
 def handle_create_account(config, body):
     account = _valid_account(body)
     if not account:
         return 400, {'error': 'Compte invalide (attendu : sa-<tenant>-<suffixe>).'}
-    meta, error = _valid_meta(body)
+    meta, error = _valid_meta(body.get('account_meta_name'))
     if error:
         return 400, {'error': error}
     return 200, _run_write(
@@ -704,59 +1010,168 @@ def handle_credentials(config, body, create):
     }
 
 
-def parse_bulk_request(config, body):
-    """Validate the JSON body of the bulk endpoints. Returns (options, error)."""
-    known = list(config.get('environments', []))
-    envs = body.get('environments')
-    if not isinstance(envs, list) or not envs or not all(isinstance(e, str) for e in envs):
-        return None, 'Choisis au moins un environnement.'
-    unknown = [e for e in envs if e not in known]
-    if unknown:
-        return None, f"Environnement inconnu : {', '.join(unknown)[:64]}"
+def parse_bulk_document(document):
+    """Turn a bulk file into a plan. Returns (plan, errors).
+
+    plan = {accounts: [{account_id, account_meta_name}],
+            buckets: [create_bucket() keyword arguments],
+            credentials: [{account_id}]}
+    Items that fail validation are left out and reported in `errors`; the
+    caller must not run a plan that has errors.
+    """
+    plan = {'accounts': [], 'buckets': [], 'credentials': []}
+    if not isinstance(document, dict):
+        return plan, ['Le fichier doit être un objet JSON : {"accounts": [...], "buckets": [...]}.']
+    errors = [f'Clé inconnue à la racine : {str(key)[:40]}' for key in document if key not in BULK_KEYS]
+
+    defaults = document.get('defaults') or {}
+    if not isinstance(defaults, dict):
+        errors.append('"defaults" doit être un objet.')
+        defaults = {}
+    errors += [f'Clé inconnue dans defaults : {str(key)[:40]}' for key in defaults if key not in DEFAULT_KEYS]
+    defaults = {k: v for k, v in defaults.items() if k in DEFAULT_KEYS and v is not None}
+
+    accounts_in = document.get('accounts') or []
+    buckets_in = document.get('buckets') or []
+    if not isinstance(accounts_in, list) or not isinstance(buckets_in, list):
+        return plan, errors + ['"accounts" et "buckets" doivent être des listes.']
+    if not accounts_in and not buckets_in:
+        return plan, errors + ['Le fichier ne contient ni comptes ni buckets.']
+
+    seen_accounts, seen_buckets, targets = set(), set(), []
+
+    def add_target(account_id):
+        if account_id not in targets:
+            targets.append(account_id)
+
+    for i, entry in enumerate(accounts_in):
+        where = f'accounts[{i}]'
+        if isinstance(entry, str):
+            entry = {'id': entry}
+        if not isinstance(entry, dict):
+            errors.append(f'{where} : attendu un objet {{"id": ...}} ou un identifiant.')
+            continue
+        unknown = [str(k)[:40] for k in entry if k not in ACCOUNT_KEYS]
+        if unknown:
+            errors.append(f'{where} : clé inconnue {", ".join(unknown)}.')
+            continue
+        account_id = str(entry.get('id', '')).strip()
+        if not ACCOUNT_RE.match(account_id):
+            errors.append(f'{where} : identifiant de compte invalide "{account_id[:64]}" (attendu : sa-<tenant>-<suffixe>).')
+            continue
+        if account_id in seen_accounts:
+            errors.append(f'{where} : compte {account_id} en double.')
+            continue
+        meta, error = _valid_meta(entry.get('account_meta_name', defaults.get('account_meta_name')))
+        if error:
+            errors.append(f'{where} ({account_id}) : {error}')
+            continue
+        seen_accounts.add(account_id)
+        plan['accounts'].append({'account_id': account_id, 'account_meta_name': meta})
+        add_target(account_id)
+
+    for i, entry in enumerate(buckets_in):
+        where = f'buckets[{i}]'
+        if not isinstance(entry, dict):
+            errors.append(f'{where} : attendu un objet.')
+            continue
+        name = str(entry.get('name', '')).strip()
+        where = f'{where} ({name[:64]})' if name else where
+        unknown = [str(k)[:40] for k in entry if k not in BUCKET_KEYS]
+        if unknown:
+            errors.append(f'{where} : clé inconnue {", ".join(unknown)}.')
+            continue
+        merged = {**defaults, **{k: v for k, v in entry.items() if v is not None}}
+        account_id = str(merged.get('account', '')).strip()
+        if not ACCOUNT_RE.match(account_id):
+            errors.append(f'{where} : compte invalide "{account_id[:64]}" (attendu : sa-<tenant>-<suffixe>).')
+            continue
+        if not BUCKET_RE.match(name):
+            errors.append(f'{where} : nom de bucket invalide (3 à 63 caractères : minuscules, chiffres, - et .).')
+            continue
+        if name in seen_buckets:
+            errors.append(f'{where} : bucket en double.')
+            continue
+        for key in ('quota_gb', 'storage_location', 'allowed_ips'):
+            if key not in merged:
+                errors.append(f'{where} : "{key}" manquant (ni dans le bucket, ni dans defaults).')
+        if any(key not in merged for key in ('quota_gb', 'storage_location', 'allowed_ips')):
+            continue
+        quota_gb, error = _parse_quota(merged['quota_gb'])
+        location, error2 = _parse_location(merged['storage_location'])
+        ips, error3 = _parse_ips(merged['allowed_ips'])
+        meta, error4 = _valid_meta(merged.get('account_meta_name'))
+        error = error or error2 or error3 or error4 or (None if ips else 'Au moins une IP autorisée est requise.')
+        if error:
+            errors.append(f'{where} : {error}')
+            continue
+        seen_buckets.add(name)
+        plan['buckets'].append({
+            'account_id': account_id, 'bucket_name': name, 'quota_gb': quota_gb,
+            'storage_location': location, 'allowed_ips': ips, 'account_meta_name': meta,
+        })
+        add_target(account_id)
+
+    plan['credentials'] = [{'account_id': account_id} for account_id in targets]
+    return plan, errors
+
+
+def parse_bulk_request(body):
+    """Validate the JSON body of the bulk endpoints. Returns (plan, credentials_mode, errors, fatal)."""
     credentials = body.get('credentials', 'none')
     if credentials not in ('none', 'get', 'create'):
-        return None, 'Option credentials invalide.'
-    options = {
-        'environments': envs,
-        'accounts': body.get('accounts') is True,
-        'buckets': body.get('buckets') is True,
-        'credentials': credentials,
-    }
-    if not (options['accounts'] or options['buckets'] or credentials != 'none'):
-        return None, 'Choisis au moins une étape.'
-    return options, None
-
-
-def build_plan(config, options):
-    """What the bulk run would do, from config.json (never from the client)."""
-    envs = options['environments']
-    plan = {'accounts': [], 'buckets': [], 'credentials': [], 'errors': []}
-    if options['accounts']:
-        plan['accounts'] = hm.plan_storage_accounts(config, envs)
-    if options['buckets']:
-        plan['buckets'], plan['errors'] = hm.plan_buckets(config, envs)
-    if options['credentials'] != 'none':
-        plan['credentials'] = hm.plan_credentials(config, envs)
-    return plan
+        return None, None, [], 'Option credentials invalide.'
+    plan, errors = parse_bulk_document(body.get('document'))
+    if credentials == 'none':
+        plan['credentials'] = []
+    return plan, credentials, errors, None
 
 
 def handle_bulk_plan(config, body):
-    options, error = parse_bulk_request(config, body)
-    if error:
-        return 400, {'error': error}
-    plan = build_plan(config, options)
+    plan, _, errors, fatal = parse_bulk_request(body)
+    if fatal:
+        return 400, {'error': fatal}
     plan['buckets'] = [
         {**{k: v for k, v in item.items() if k != 'allowed_ips'}, 'ip_count': len(item['allowed_ips'])}
         for item in plan['buckets']
     ]
+    plan['errors'] = errors
     return 200, {'plan': plan}
 
 
+def handle_bulk_expand(config, body):
+    """Expand config.json (hive_management.py format) into a bulk file."""
+    known = list(config.get('environments', []))
+    envs = body.get('environments')
+    if not isinstance(envs, list) or not envs or not all(isinstance(e, str) for e in envs):
+        return 400, {'error': 'Choisis au moins un environnement.'}
+    unknown = [e for e in envs if e not in known]
+    if unknown:
+        return 400, {'error': f"Environnement inconnu : {', '.join(unknown)[:64]}"}
+    accounts = hm.plan_storage_accounts(config, envs)
+    buckets, warnings = hm.plan_buckets(config, envs)
+    document = {
+        'accounts': [
+            {'id': a['account_id'], 'account_meta_name': a['account_meta_name']} for a in accounts
+        ],
+        'buckets': [
+            {
+                'account': b['account_id'], 'name': b['bucket_name'], 'quota_gb': b['quota_gb'],
+                'storage_location': b['storage_location'], 'allowed_ips': b['allowed_ips'],
+                'account_meta_name': b['account_meta_name'],
+            }
+            for b in buckets
+        ],
+    }
+    return 200, {'document': document, 'warnings': warnings}
+
+
 def handle_bulk_run(config, body):
-    options, error = parse_bulk_request(config, body)
-    if error:
-        return 400, {'error': error}
-    plan = build_plan(config, options)
+    plan, credentials_mode, errors, fatal = parse_bulk_request(body)
+    if fatal:
+        return 400, {'error': fatal}
+    if errors:
+        return 400, {'error': f'Le fichier contient {len(errors)} erreur(s) : prévisualise-le et corrige-les.'}
     results, credentials = [], []
 
     def record(kind, target, ok, message):
@@ -771,16 +1186,14 @@ def handle_bulk_run(config, body):
             write_step('Compte', item['account_id'], lambda item=item: hm.create_storage_account(
                 config, item['account_id'], item['account_meta_name']))
         for item in plan['buckets']:
-            params = {k: v for k, v in item.items() if k != 'env'}
-            write_step('Bucket', item['bucket_name'], lambda params=params: hm.create_bucket(config, **params))
-        if options['credentials'] != 'none':
-            create = options['credentials'] == 'create'
+            write_step('Bucket', item['bucket_name'], lambda item=item: hm.create_bucket(config, **item))
+        if credentials_mode != 'none':
+            create = credentials_mode == 'create'
             fetch = hm.request_credential_for if create else hm.fetch_credential_for
             for item in plan['credentials']:
                 cred = fetch(config, item['account_id'])
                 if cred:
                     credentials.append({
-                        'env': item['env'],
                         'account': item['account_id'],
                         'access_key_id': cred['access_key_id'],
                         'secret_key': cred['secret_key'],
@@ -791,16 +1204,18 @@ def handle_bulk_run(config, body):
     _, log, aborted = call_api(work)
     if aborted:
         record('Abandon', '', False, MSG_NO_CREDS)
-    for message in plan['errors']:
-        record('Config', '', False, message)
     return 200, {'results': results, 'credentials': credentials, 'log': log}
 
 
 POST_ROUTES = {
     '/api/bucket/create': handle_create_bucket,
+    '/api/bucket/get': handle_get_bucket,
+    '/api/bucket/update': handle_update_bucket,
+    '/api/bucket/delete': handle_delete_bucket,
     '/api/account/create': handle_create_account,
     '/api/creds/get': lambda config, body: handle_credentials(config, body, create=False),
     '/api/creds/create': lambda config, body: handle_credentials(config, body, create=True),
+    '/api/bulk/expand': handle_bulk_expand,
     '/api/bulk/plan': handle_bulk_plan,
     '/api/bulk/run': handle_bulk_run,
 }
@@ -893,7 +1308,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Local web UI for the Hive management tasks')
+    parser = argparse.ArgumentParser(description='Local web UI to manage IBM COS accounts, buckets and credentials')
     parser.add_argument('--config', default='config.json', help='Path to config.json')
     parser.add_argument('--env-file', default='.env', help='Path to a .env file with the credentials')
     parser.add_argument('--port', type=int, default=8765, help='Local port (default: 8765)')
@@ -906,7 +1321,7 @@ def main():
 
     server = ThreadingHTTPServer(('127.0.0.1', args.port), Handler)
     url = f'http://127.0.0.1:{args.port}/'
-    print(f'Hive management UI on {url} (Ctrl+C to stop)')
+    print(f'COS management UI on {url} (Ctrl+C to stop)')
     if not args.no_browser:
         webbrowser.open(url)
     try:
