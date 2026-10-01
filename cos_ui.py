@@ -36,6 +36,7 @@ never called by more than one request at once.
 
 import argparse
 import contextlib
+import datetime
 import io
 import ipaddress
 import json
@@ -61,6 +62,12 @@ LABEL_SUFFIX_RE = re.compile(r'^[-_.A-Za-z0-9]{1,20}$')
 ACCOUNT_TENANT_RE = re.compile(r'^sa-(.+)-\d+$')
 FIND_RE = re.compile(r'^[A-Za-z0-9._-]{1,255}$')                       # a bucket name, or part of one
 MAX_QUOTA_GB = 1_000_000
+MAX_REPORT_BUCKETS = 1000
+QUOTA_PATTERNS = [re.compile(r'^hard_quota$', re.I), re.compile(r'quota', re.I)]
+QUOTA_EXCLUDE = re.compile(r'used|usage|percent|pct', re.I)
+USAGE_PATTERNS = [re.compile(r'^(bytes_used|used_bytes|storage_used|used|usage|total_bytes|bytes)$', re.I),
+                  re.compile(r'used|usage', re.I)]
+USAGE_EXCLUDE = re.compile(r'quota|limit|count|object|num|percent|pct|free|avail|remain', re.I)
 MAX_BODY = 1024 * 1024
 CREATED = (201,)
 DONE = (200, 201, 202, 204)
@@ -102,7 +109,18 @@ PAGE = r"""<!doctype html>
   #tabs button { background:none; color:var(--muted); border:0; border-bottom:2px solid transparent; border-radius:0; padding:8px 14px; }
   #tabs button.active { color:var(--fg); border-bottom-color:var(--accent); font-weight:600; }
 
-  #search, #find { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  #search, #find, .inline-form { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  #report h2 { font-size:17px; margin:18px 0 2px; }
+  #report .meta { color:var(--muted); font-size:13px; }
+  #report td.num, #report th.num { text-align:right; white-space:nowrap; }
+  #report tr.account td { background:var(--card); font-weight:600; }
+  #report tr.total td { font-weight:700; border-top:2px solid var(--line); }
+  #report td.warn { color:#9a6700; font-weight:600; } #report td.crit { color:var(--err); font-weight:700; }
+  @media print {
+    #tabs, #status, #creds, #bucket-panel, #tab-search, #tab-create, #tab-bulk, #tenants-panel, #logbox, #report-form { display:none !important; }
+    body { background:#fff; color:#000; } main { max-width:none; padding:0; }
+    #tab-report { display:block !important; }
+  }
   #find { margin-top:10px; }
   #search input, #find input { min-width:200px; }
   #find-help { margin:4px 0 0; }
@@ -159,6 +177,7 @@ PAGE = r"""<!doctype html>
     <button type="button" class="active" data-tab="search">Recherche</button>
     <button type="button" data-tab="create">Créer</button>
     <button type="button" data-tab="bulk">Création en masse</button>
+    <button type="button" data-tab="report">Rapport</button>
   </nav>
   <div id="status"></div>
   <div id="creds" class="panel" hidden></div>
@@ -249,6 +268,19 @@ PAGE = r"""<!doctype html>
     <div id="b-result"></div>
   </section>
 
+  <section id="tab-report" hidden>
+    <p class="empty">Rapport d'un tenant : ses buckets, leur quota et leur utilisation. Un appel API par bucket, donc la génération peut prendre un moment.</p>
+    <form id="report-form" class="inline-form">
+      <span class="prefix">tenant</span>
+      <input type="text" id="r-tenant" placeholder="tenant" autocomplete="off" required list="tenants-datalist"
+             pattern="[A-Za-z0-9][A-Za-z0-9_\-]*" maxlength="64">
+      <button type="submit" id="r-go">Générer le rapport</button>
+      <button type="button" class="secondary" id="r-csv" hidden>Exporter en CSV</button>
+      <button type="button" class="secondary" id="r-print" hidden>Imprimer</button>
+    </form>
+    <div id="report"></div>
+  </section>
+
   <details id="logbox" hidden><summary>Détails de l'appel API</summary><pre id="log"></pre></details>
 </main>
 <script>
@@ -325,7 +357,7 @@ PAGE = r"""<!doctype html>
   // ---- tabs ---------------------------------------------------------------
   document.querySelectorAll('#tabs button').forEach(b => b.addEventListener('click', () => {
     document.querySelectorAll('#tabs button').forEach(x => x.classList.toggle('active', x === b));
-    for (const name of ['search', 'create', 'bulk']) $('tab-' + name).hidden = name !== b.dataset.tab;
+    for (const name of ['search', 'create', 'bulk', 'report']) $('tab-' + name).hidden = name !== b.dataset.tab;
   }));
 
   // ---- credentials panel ----------------------------------------------------
@@ -929,6 +961,111 @@ PAGE = r"""<!doctype html>
     invalidatePlan();
   });
 
+  // ---- report -------------------------------------------------------------------------
+  let reportData = null;
+
+  function fmtBytes(n) {
+    if (n === null || n === undefined) return 'n/d';
+    const units = ['o', 'ko', 'Mo', 'Go', 'To', 'Po'];
+    let v = n, i = 0;
+    while (v >= 1000 && i < units.length - 1) { v /= 1000; i++; }
+    return (i === 0 ? String(v) : (Math.round(v * 100) / 100).toLocaleString('fr-FR')) + ' ' + units[i];
+  }
+  function pct(used, quota) { return quota > 0 && used !== null && used !== undefined ? used / quota * 100 : null; }
+  function fmtPct(p) { return p === null ? 'n/d' : (Math.round(p * 10) / 10).toLocaleString('fr-FR') + ' %'; }
+  function pctClass(p) { return p === null ? 'num' : p >= 100 ? 'num crit' : p >= 80 ? 'num warn' : 'num'; }
+  function sum(rows, key) {
+    const known = rows.filter(r => r[key] !== null);
+    return known.length ? known.reduce((s, r) => s + r[key], 0) : null;
+  }
+
+  function renderReport(r) {
+    const box = $('report');
+    box.textContent = '';
+    box.append(el('h2', 'Rapport du tenant ' + r.tenant));
+    box.append(el('div', 'Édité le ' + new Date(r.generated_at).toLocaleString('fr-FR') +
+      (r.usage_key ? ' - utilisation lue dans « ' + r.usage_key + ' »' : ''), 'meta'));
+    for (const w of r.warnings) box.append(el('div', w, 'err-list'));
+    if (!r.accounts.length) { box.append(el('p', 'Aucun compte pour ce tenant.', 'empty')); return; }
+
+    const t = el('table');
+    const head = el('tr');
+    for (const [h, cls] of [['Compte / bucket', ''], ['Quota', 'num'], ['Utilisation', 'num'], ['%', 'num'], ['Remarque', '']]) head.append(el('th', h, cls));
+    t.append(head);
+    const all = [];
+    for (const a of r.accounts) {
+      all.push(...a.buckets);
+      const q = sum(a.buckets, 'quota_bytes'), u = sum(a.buckets, 'used_bytes');
+      const tr = el('tr', undefined, 'account');
+      tr.append(el('td', a.account + ' (' + a.buckets.length + ' bucket(s))'), el('td', fmtBytes(q), 'num'), el('td', fmtBytes(u), 'num'), el('td', fmtPct(pct(u, q)), 'num'), el('td', ''));
+      t.append(tr);
+      for (const b of a.buckets) {
+        const p = pct(b.used_bytes, b.quota_bytes);
+        const row = el('tr');
+        row.append(el('td', '\u00a0\u00a0' + b.name, 'mono'), el('td', fmtBytes(b.quota_bytes), 'num'), el('td', fmtBytes(b.used_bytes), 'num'),
+                   el('td', fmtPct(p), pctClass(p)), el('td', b.error || ''));
+        t.append(row);
+      }
+    }
+    const q = sum(all, 'quota_bytes'), u = sum(all, 'used_bytes');
+    const total = el('tr', undefined, 'total');
+    total.append(el('td', 'Total (' + all.length + ' bucket(s))'), el('td', fmtBytes(q), 'num'), el('td', fmtBytes(u), 'num'), el('td', fmtPct(pct(u, q)), 'num'), el('td', ''));
+    t.append(total);
+    box.append(t);
+    if (all.some(b => b.quota_bytes === null || b.used_bytes === null)) {
+      box.append(el('div', 'Les valeurs n/d ne sont pas comptées dans les totaux.', 'meta'));
+    }
+  }
+
+  function reportCsv(r) {
+    const quote = v => '"' + String(v === null || v === undefined ? '' : v).replace(/"/g, '""') + '"';
+    const lines = [['tenant', 'compte', 'bucket', 'quota_octets', 'utilisation_octets', 'utilisation_pct', 'remarque', 'edite_le']];
+    for (const a of r.accounts) for (const b of a.buckets) {
+      const p = pct(b.used_bytes, b.quota_bytes);
+      lines.push([r.tenant, a.account, b.name, b.quota_bytes, b.used_bytes, p === null ? '' : Math.round(p * 10) / 10, b.error || '', r.generated_at]);
+    }
+    return '\ufeff' + lines.map(l => l.map(quote).join(';')).join('\r\n') + '\r\n';
+  }
+
+  $('report-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const tenant = $('r-tenant').value.trim();
+    const go = $('r-go');
+    go.disabled = true;
+    reportData = null;
+    $('r-csv').hidden = true; $('r-print').hidden = true;
+    $('report').textContent = '';
+    setStatus('Génération du rapport (un appel API par bucket, ça peut prendre un moment)...', false);
+    try {
+      const res = await fetch('/api/report?tenant=' + encodeURIComponent(tenant));
+      const out = await res.json();
+      showLog(out.log);
+      if (!res.ok || out.error) { setStatus(out.error || ('Erreur HTTP ' + res.status), true); return; }
+      reportData = out;
+      renderReport(out);
+      const n = out.accounts.reduce((s, a) => s + a.buckets.length, 0);
+      setStatus('Rapport prêt : ' + out.accounts.length + ' compte(s), ' + n + ' bucket(s).', out.has_error || out.warnings.length > 0);
+      $('r-csv').hidden = !n; $('r-print').hidden = !n;
+    } catch (err) {
+      setStatus('Erreur : ' + err, true);
+    } finally {
+      go.disabled = false;
+    }
+  });
+
+  $('r-csv').addEventListener('click', () => {
+    if (!reportData) return;
+    const blob = new Blob([reportCsv(reportData)], {type: 'text/csv;charset=utf-8'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'rapport-' + reportData.tenant + '-' + reportData.generated_at.slice(0, 10) + '.csv';
+    document.body.append(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+  });
+  $('r-print').addEventListener('click', () => window.print());
+
   loadInfo();
 </script>
 </body>
@@ -1112,6 +1249,111 @@ def tenant_locations(config):
             valid = [n for n in names if isinstance(n, str) and LABEL_RE.match(n)]
             if valid:
                 result[str(name)] = valid
+    return result
+
+
+def _find_number(value, include, exclude=None):
+    """First (key, number) anywhere in a parsed JSON document whose key matches `include` and not `exclude`."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if (isinstance(item, (int, float)) and not isinstance(item, bool)
+                    and include.search(key) and not (exclude and exclude.search(key))):
+                return key, item
+        children = value.values()
+    elif isinstance(value, list):
+        children = value
+    else:
+        return None
+    for child in children:
+        found = _find_number(child, include, exclude)
+        if found:
+            return found
+    return None
+
+
+def read_quota_and_usage(details, usage_key=None):
+    """(quota_bytes, used_bytes, usage_key_found) from a bucket's GET response.
+
+    The response format is not documented, so keys are found by pattern; `usage_key`
+    (config.json) names the usage field exactly when the patterns pick the wrong one.
+    Anything not found is None.
+    """
+    quota = None
+    for pattern in QUOTA_PATTERNS:
+        quota = _find_number(details, pattern, QUOTA_EXCLUDE)
+        if quota:
+            break
+    usage = None
+    if usage_key:
+        usage = _find_number(details, re.compile('^' + re.escape(usage_key) + '$', re.I))
+    else:
+        for pattern in USAGE_PATTERNS:
+            usage = _find_number(details, pattern, USAGE_EXCLUDE)
+            if usage:
+                break
+    return (quota[1] if quota else None, usage[1] if usage else None, usage[0] if usage else None)
+
+
+def build_report(config, tenant):
+    """Per-tenant report: every bucket of the tenant's accounts with its quota and usage.
+
+    One GET /container/<name> per bucket (plus the account and bucket listings), so it only
+    runs on demand and stops at MAX_REPORT_BUCKETS. Accounts are matched on the exact tenant
+    (sa-act-0001 belongs to "act", sa-act-geoportal-0001 to "act-geoportal").
+    """
+    usage_key = config.get('usage_key')
+    usage_key = usage_key if isinstance(usage_key, str) and LABEL_RE.match(usage_key) else None
+    result = {
+        'tenant': tenant,
+        'generated_at': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'),
+        'accounts': [], 'usage_key': usage_key, 'warnings': [], 'truncated': False,
+    }
+    found_keys = set()
+
+    def work():
+        count = 0
+        for account in hm.list_accounts(config, prefix=f'sa-{tenant}-'):
+            if tenant_of(account['id']) != tenant:
+                continue
+            rows = []
+            for name in hm.list_bucket_names(config, account['id']):
+                if count >= MAX_REPORT_BUCKETS:
+                    result['truncated'] = True
+                    break
+                count += 1
+                row = {'name': name, 'quota_bytes': None, 'used_bytes': None, 'error': None}
+                status, text, error = _http(lambda: hm.get_bucket(config, name))
+                if error or status != 200:
+                    row['error'] = error or f'HTTP {status}'
+                else:
+                    try:
+                        row['quota_bytes'], row['used_bytes'], key = read_quota_and_usage(json.loads(text), usage_key)
+                    except json.JSONDecodeError:
+                        row['error'] = 'réponse illisible'
+                    else:
+                        if key:
+                            found_keys.add(key)
+                rows.append(row)
+            result['accounts'].append({'account': account['id'], 'buckets': rows})
+            if result['truncated']:
+                break
+
+    _, log, aborted = call_api(work)
+    rows = [b for a in result['accounts'] for b in a['buckets']]
+    if aborted:
+        result['warnings'].append(MSG_NO_CREDS)
+    if result['truncated']:
+        result['warnings'].append(f'Rapport limité aux {MAX_REPORT_BUCKETS} premiers buckets.')
+    if any(b['error'] for b in rows):
+        result['warnings'].append(f"{sum(1 for b in rows if b['error'])} bucket(s) illisibles (voir la colonne Remarque).")
+    if any(not b['error'] for b in rows) and not found_keys:
+        result['warnings'].append(
+            "Aucune utilisation trouvée dans les réponses de l'API. Ouvre « Voir » sur un bucket pour trouver le nom du champ, "
+            'puis ajoute "usage_key": "<nom>" à config.json.')
+    if found_keys:
+        result['usage_key'] = usage_key or ', '.join(sorted(found_keys))
+    result['log'] = log
+    result['has_error'] = aborted or any(line.startswith(('Error', 'Network error')) for line in log.splitlines())
     return result
 
 
@@ -1668,6 +1910,12 @@ class Handler(BaseHTTPRequestHandler):
             })
         elif url.path == '/api/tenants':
             self._json(200, list_tenants(self.config))
+        elif url.path == '/api/report':
+            tenant = (parse_qs(url.query).get('tenant') or [''])[0].strip()
+            if not TENANT_RE.match(tenant):
+                self._json(400, {'error': 'Tenant invalide (lettres, chiffres, - et _ uniquement).'})
+                return
+            self._json(200, build_report(self.config, tenant))
         elif url.path == '/api/bucket/find':
             query = parse_qs(url.query)
             name = (query.get('name') or [''])[0].strip()
