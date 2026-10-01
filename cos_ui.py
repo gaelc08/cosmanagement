@@ -59,6 +59,7 @@ BUCKET_NAME_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$')     # names t
 LABEL_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
 CV_PREFIX = 'cv-'                                                      # container vault names
 LABEL_SUFFIX_RE = re.compile(r'^[-_.A-Za-z0-9]{1,20}$')
+VAULT_TENANT_RE = re.compile(r'^cv-(.+?)(?:-\d+)?$')
 ACCOUNT_TENANT_RE = re.compile(r'^sa-(.+)-\d+$')
 FIND_RE = re.compile(r'^[A-Za-z0-9._-]{1,255}$')                       # a bucket name, or part of one
 MAX_QUOTA_GB = 1_000_000
@@ -291,6 +292,7 @@ PAGE = r"""<!doctype html>
   let allLocations = [];
   let locationLabels = {};   // name suffix -> label, from config.json
   let tenants = [];
+  let tenantSource = 'accounts';
 
   // sa-<tenant>-<number>; mirrors tenant_of() on the server
   function tenantOf(account) {
@@ -729,14 +731,16 @@ PAGE = r"""<!doctype html>
   function renderTenants(filter) {
     const box = $('tenants-panel');
     box.textContent = '';
-    box.append(el('strong', tenants.length + ' tenant(s) (déduits des comptes sa-<tenant>-<numéro>)'));
+    box.append(el('strong', tenants.length + ' tenant(s) ' + (tenantSource === 'vaults'
+      ? '(déduits des container vaults cv-<tenant>-<numéro>)' : '(déduits des comptes sa-<tenant>-<numéro>)')));
     const input = el('input'); input.type = 'text'; input.placeholder = 'Filtrer...'; input.value = filter || '';
     input.addEventListener('input', () => renderTenants(input.value)); box.append(el('br'), input);
     const chips = el('div', undefined, 'chips');
     for (const t of tenants) {
       if (filter && !t.name.toLowerCase().includes(filter.toLowerCase())) continue;
-      const b = el('button', t.name + ' (' + t.accounts.length + ')', 'small secondary');
-      b.title = t.accounts.join(', ');
+      const items = t.vaults || t.accounts;
+      const b = el('button', t.name + ' (' + items.length + ')', 'small secondary');
+      b.title = items.join(', ');
       b.addEventListener('click', () => { $('tenant').value = t.name; runSearch(t.name, false); });
       chips.append(b);
     }
@@ -750,13 +754,14 @@ PAGE = r"""<!doctype html>
   $('tenants-go').addEventListener('click', async () => {
     const btn = $('tenants-go');
     btn.disabled = true;
-    setStatus('Lecture des comptes (un seul appel API)...', false);
+    setStatus('Lecture des tenants...', false);
     try {
       const res = await fetch('/api/tenants');
       const out = await res.json();
       showLog(out.log);
       if (!res.ok || out.error) { setStatus(out.error || ('Erreur HTTP ' + res.status), true); return; }
       tenants = out.tenants;
+      tenantSource = out.source;
       const list = $('tenants-datalist');
       list.textContent = '';
       for (const t of tenants) { const o = el('option'); o.value = t.name; list.append(o); }
@@ -1188,13 +1193,39 @@ def tenant_of(account_id):
     return rest.rsplit('-', 1)[0] if '-' in rest else rest
 
 
-def list_tenants(config):
-    """Tenants deduced from the account ids (one GET /accounts). Returns {tenants: [{name, accounts}], log, has_error}."""
+def vault_tenant(vault):
+    """Tenant a container vault belongs to: cv-<tenant>-<number> (cv-act-01 and cv-act-02 -> act).
+    A vault without a number is its own tenant (cv-claas-lab -> claas-lab)."""
+    return VAULT_TENANT_RE.match(vault).group(1)
+
+
+def list_tenants(config, vaults=()):
+    """Tenants for the "Lister les tenants" button.
+
+    With a list of container vaults (storage_locations.txt) or tenants declared in config.json, the tenants are
+    read from the vault names, with no API call. Without either, they are deduced from the account ids with one
+    GET /accounts. Returns {source, tenants: [{name, vaults | accounts}], log, has_error, message}.
+    """
+    declared = tenant_locations(config)
+    if vaults or declared:
+        groups = {}
+        for vault in vaults:
+            if VAULT_TENANT_RE.match(vault):
+                groups.setdefault(vault_tenant(vault), []).append(vault)
+        for name, names in declared.items():
+            known = groups.setdefault(name, [])
+            known.extend(n for n in names if n not in known)
+        return {
+            'source': 'vaults',
+            'tenants': [{'name': name, 'vaults': sorted(names)} for name, names in sorted(groups.items())],
+            'log': '', 'has_error': False, 'message': '',
+        }
     ids, log, aborted = call_api(lambda: [a['id'] for a in hm.list_accounts(config, prefix='sa-')])
     tenants = {}
     for account_id in ids or []:
         tenants.setdefault(tenant_of(account_id), []).append(account_id)
     return {
+        'source': 'accounts',
         'tenants': [{'name': name, 'accounts': sorted(accounts)} for name, accounts in sorted(tenants.items())],
         'log': log,
         'has_error': aborted or any(line.startswith(('Error', 'Network error')) for line in log.splitlines()),
@@ -1909,7 +1940,7 @@ class Handler(BaseHTTPRequestHandler):
                 'labels': location_labels(self.config),
             })
         elif url.path == '/api/tenants':
-            self._json(200, list_tenants(self.config))
+            self._json(200, list_tenants(self.config, self.locations))
         elif url.path == '/api/report':
             tenant = (parse_qs(url.query).get('tenant') or [''])[0].strip()
             if not TENANT_RE.match(tenant):
