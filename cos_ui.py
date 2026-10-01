@@ -40,6 +40,7 @@ import io
 import ipaddress
 import json
 import re
+import sys
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -935,6 +936,22 @@ PAGE = r"""<!doctype html>
 """
 
 
+def build_allowed_hosts(port, extra=()):
+    """Host header values accepted by the server: loopback, plus any --allow-host given.
+
+    A name without a port is accepted with and without it, since a proxy or tunnel
+    usually presents the default port (no port at all) to the server.
+    """
+    hosts = {f'127.0.0.1:{port}', f'localhost:{port}'}
+    for host in extra:
+        host = host.strip()
+        if host:
+            hosts.add(host)
+            if ':' not in host:
+                hosts.add(f'{host}:{port}')
+    return frozenset(hosts)
+
+
 def call_api(func):
     """Run func() holding the API lock, capturing what hive_management prints.
 
@@ -1600,9 +1617,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def _host_ok(self):
         # Refuse foreign Host headers so a web page can't reach this server via DNS rebinding.
-        if self.headers.get('Host', '') in self.allowed_hosts:
+        host = self.headers.get('Host', '')
+        if host in self.allowed_hosts:
             return True
-        self._json(403, {'error': 'forbidden host'})
+        shown = host[:100]
+        print(f'Refused a request whose Host header is {shown!r}. If you reach this page under that name '
+              f'(machine name, tunnel, proxy), restart with: --allow-host {shown}', file=sys.stderr)
+        self._json(403, {'error': f'forbidden host: {shown!r}. Open http://127.0.0.1:<port>/ or http://localhost:<port>/, '
+                                  f'or restart cos_ui.py with --allow-host {shown} to accept that name.'})
         return False
 
     def do_GET(self):
@@ -1690,6 +1712,9 @@ def main():
                         help='Optional local list of storage locations (container vaults), one per line; '
                              'a pasted table works, only the first word starting with cv- is kept')
     parser.add_argument('--port', type=int, default=8765, help='Local port (default: 8765)')
+    parser.add_argument('--allow-host', action='append', default=[], metavar='HOST',
+                        help='Also accept this Host header (machine name, tunnel or proxy name); repeatable. '
+                             'The server still only listens on 127.0.0.1.')
     parser.add_argument('--no-browser', action='store_true', help="Don't open the browser automatically")
     args = parser.parse_args()
 
@@ -1698,7 +1723,7 @@ def main():
     Handler.locations = load_locations(args.locations)
     if Handler.locations:
         print(f'{len(Handler.locations)} storage location(s) read from {args.locations}')
-    Handler.allowed_hosts = frozenset({f'127.0.0.1:{args.port}', f'localhost:{args.port}'})
+    Handler.allowed_hosts = build_allowed_hosts(args.port, args.allow_host)
 
     server = ThreadingHTTPServer(('127.0.0.1', args.port), Handler)
     url = f'http://127.0.0.1:{args.port}/'
