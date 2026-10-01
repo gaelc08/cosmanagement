@@ -63,12 +63,6 @@ VAULT_TENANT_RE = re.compile(r'^cv-(.+?)(?:-\d+)?$')
 ACCOUNT_TENANT_RE = re.compile(r'^sa-(.+)-\d+$')
 FIND_RE = re.compile(r'^[A-Za-z0-9._-]{1,255}$')                       # a bucket name, or part of one
 MAX_QUOTA_GB = 1_000_000
-MAX_REPORT_BUCKETS = 1000
-QUOTA_PATTERNS = [re.compile(r'^hard_quota$', re.I), re.compile(r'quota', re.I)]
-QUOTA_EXCLUDE = re.compile(r'used|usage|percent|pct', re.I)
-USAGE_PATTERNS = [re.compile(r'^(bytes_used|used_bytes|storage_used|used|usage|total_bytes|bytes)$', re.I),
-                  re.compile(r'used|usage', re.I)]
-USAGE_EXCLUDE = re.compile(r'quota|limit|count|object|num|percent|pct|free|avail|remain', re.I)
 MAX_BODY = 1024 * 1024
 CREATED = (201,)
 DONE = (200, 201, 202, 204)
@@ -288,6 +282,7 @@ PAGE = r"""<!doctype html>
   const $ = id => document.getElementById(id);
   let data = {};
   let lastSearch = null;   // {kind: 'tenant' | 'bucket' | 'scan', value}
+  let info = {};           // account -> bucket -> the listing's entry (quota, usage, location, settings...)
   let tenantLocations = {};   // tenant -> storage locations, from config.json
   let allLocations = [];
   let locationLabels = {};   // name suffix -> label, from config.json
@@ -450,6 +445,26 @@ PAGE = r"""<!doctype html>
     return findMatching(details, /^allowed_ips?$/i, isStringList) ?? findMatching(details, /allowed.?ip|whitelist|firewall/i, isStringList);
   }
 
+  const yesNo = v => v === true ? 'Oui' : v === false ? 'Non' : String(v);
+  function fmtDate(v) { const n = Number(v); return Number.isFinite(n) && n > 0 ? new Date(n).toLocaleString('fr-FR') : String(v); }
+  // [key in the listing, label, formatter]
+  const BUCKET_FIELDS = [
+    ['storage_location', 'Storage location', v => labelFor(String(v))],
+    ['creation_time', 'Créé le', fmtDate],
+    ['hard_quota', 'Quota', v => fmtBytes(Number(v))],
+    ['bytes_used', 'Utilisation', v => fmtBytes(Number(v))],
+    ['object_count', 'Objets', v => Number(v).toLocaleString('fr-FR')],
+    ['versioning_state', 'Versioning', String],
+    ['bucket_lifecycle_policy', 'Politique de cycle de vie', String],
+    ['notifications_configuration', 'Notifications', String],
+    ['static_website_enabled', 'Site web statique', yesNo],
+    ['bucket_replication_policy', 'Réplication', yesNo],
+    ['object_lock_enabled', "Verrouillage d'objets", yesNo],
+    ['has_active_inventory_policy', 'Inventaire actif', yesNo],
+    ['is_backup_vault', 'Backup vault', yesNo],
+    ['is_legacy', 'Legacy', yesNo],
+  ];
+
   function closeBucketPanel() { $('bucket-panel').textContent = ''; $('bucket-panel').hidden = true; }
 
   function panelHeader(title) {
@@ -469,11 +484,38 @@ PAGE = r"""<!doctype html>
     const box = panelHeader((mode === 'edit' ? 'Modifier le bucket ' : 'Bucket ') + bucket + ' (' + account + ')');
 
     if (mode === 'view') {
-      if (ok) {
-        const rows = out.details !== null && typeof out.details === 'object' ? flatten(out.details, '', []) : [];
+      const entry = (info[account] || {})[bucket];
+      const details = ok ? out.details : null;
+      if (!ok) box.append(el('div', 'Détails du bucket (GET) indisponibles : ' + (out.error || out.message) + '.', 'empty'));
+      if (entry) {
+        const pick = key => entry[key] !== undefined ? entry[key] : findKey(details, key);
+        const used = pick('bytes_used'), quota = pick('hard_quota');
+        const rows = [];
+        for (const [key, label, fmt] of BUCKET_FIELDS) {
+          const v = pick(key);
+          if (v === undefined || v === null) continue;
+          rows.push([label, key === 'bytes_used' ? fmtBytes(Number(v)) + (Number(quota) > 0 ? ' (' + fmtPct(pct(Number(v), Number(quota))) + ' du quota)' : '') : fmt(v)]);
+        }
+        const ipList = findIps(details);
+        if (ipList !== undefined) rows.push(['IP autorisées (pare-feu)', ipList.length ? ipList.join(', ') : 'aucune']);
+        const known = new Set(BUCKET_FIELDS.map(f => f[0]).concat(['name']));
+        const extra = flatten(Object.fromEntries(Object.entries(entry).filter(([k]) => !known.has(k))), '', []);
+        if (rows.length) box.append(table(['Information', 'Valeur'], rows));
+        if (extra.length) {
+          const more = el('details');
+          more.append(el('summary', 'Autres champs du listage (' + extra.length + ')'), table(['Champ', 'Valeur'], extra));
+          box.append(more);
+        }
+        const rawEntry = el('details');
+        rawEntry.append(el('summary', 'Entrée brute du listage'), el('pre', JSON.stringify(entry, null, 2)));
+        box.append(rawEntry);
+      } else if (ok) {
+        const rows = details !== null && typeof details === 'object' ? flatten(details, '', []) : [];
         if (rows.length) box.append(table(['Champ', 'Valeur'], rows));
+      }
+      if (ok) {
         const raw = el('details');
-        raw.append(el('summary', 'Réponse brute'), el('pre', out.raw));
+        raw.append(el('summary', 'Réponse brute de GET /container/' + bucket), el('pre', out.raw));
         box.append(raw);
       }
       const close = el('button', 'Fermer', 'small secondary');
@@ -643,6 +685,7 @@ PAGE = r"""<!doctype html>
       showLog(out.log);
       if (!res.ok || out.error) { setStatus(out.error || ('Erreur HTTP ' + res.status), true); return; }
       data = out.accounts;
+      info = out.info || {};
       const n = Object.keys(data).length;
       const total = Object.values(data).reduce((s, b) => s + b.length, 0);
       if (!keepMessage || out.has_error) {
@@ -681,6 +724,7 @@ PAGE = r"""<!doctype html>
       showLog(out.log);
       if (!res.ok || out.error) { setStatus(out.error || ('Erreur HTTP ' + res.status), true); return; }
       data = out.accounts;
+      info = out.info || {};
       const n = Object.keys(data).length;
       const total = Object.values(data).reduce((s, b) => s + b.length, 0);
       let msg;
@@ -988,33 +1032,35 @@ PAGE = r"""<!doctype html>
     const box = $('report');
     box.textContent = '';
     box.append(el('h2', 'Rapport du tenant ' + r.tenant));
-    box.append(el('div', 'Édité le ' + new Date(r.generated_at).toLocaleString('fr-FR') +
-      (r.usage_key ? ' - utilisation lue dans « ' + r.usage_key + ' »' : ''), 'meta'));
+    box.append(el('div', 'Édité le ' + new Date(r.generated_at).toLocaleString('fr-FR'), 'meta'));
     for (const w of r.warnings) box.append(el('div', w, 'err-list'));
     if (!r.accounts.length) { box.append(el('p', 'Aucun compte pour ce tenant.', 'empty')); return; }
 
     const t = el('table');
     const head = el('tr');
-    for (const [h, cls] of [['Compte / bucket', ''], ['Quota', 'num'], ['Utilisation', 'num'], ['%', 'num'], ['Remarque', '']]) head.append(el('th', h, cls));
+    for (const [h, cls] of [['Compte / bucket', ''], ['Storage location', ''], ['Quota', 'num'], ['Utilisation', 'num'], ['%', 'num'], ['Objets', 'num']]) head.append(el('th', h, cls));
     t.append(head);
+    const count = n => n === null ? 'n/d' : n.toLocaleString('fr-FR');
     const all = [];
     for (const a of r.accounts) {
       all.push(...a.buckets);
       const q = sum(a.buckets, 'quota_bytes'), u = sum(a.buckets, 'used_bytes');
       const tr = el('tr', undefined, 'account');
-      tr.append(el('td', a.account + ' (' + a.buckets.length + ' bucket(s))'), el('td', fmtBytes(q), 'num'), el('td', fmtBytes(u), 'num'), el('td', fmtPct(pct(u, q)), 'num'), el('td', ''));
+      tr.append(el('td', a.account + ' (' + a.buckets.length + ' bucket(s))'), el('td', ''), el('td', fmtBytes(q), 'num'), el('td', fmtBytes(u), 'num'),
+                el('td', fmtPct(pct(u, q)), 'num'), el('td', count(sum(a.buckets, 'objects')), 'num'));
       t.append(tr);
       for (const b of a.buckets) {
         const p = pct(b.used_bytes, b.quota_bytes);
         const row = el('tr');
-        row.append(el('td', '\u00a0\u00a0' + b.name, 'mono'), el('td', fmtBytes(b.quota_bytes), 'num'), el('td', fmtBytes(b.used_bytes), 'num'),
-                   el('td', fmtPct(p), pctClass(p)), el('td', b.error || ''));
+        row.append(el('td', '\u00a0\u00a0' + b.name, 'mono'), el('td', b.storage_location ? labelFor(b.storage_location) : 'n/d'), el('td', fmtBytes(b.quota_bytes), 'num'),
+                   el('td', fmtBytes(b.used_bytes), 'num'), el('td', fmtPct(p), pctClass(p)), el('td', count(b.objects), 'num'));
         t.append(row);
       }
     }
     const q = sum(all, 'quota_bytes'), u = sum(all, 'used_bytes');
     const total = el('tr', undefined, 'total');
-    total.append(el('td', 'Total (' + all.length + ' bucket(s))'), el('td', fmtBytes(q), 'num'), el('td', fmtBytes(u), 'num'), el('td', fmtPct(pct(u, q)), 'num'), el('td', ''));
+    total.append(el('td', 'Total (' + all.length + ' bucket(s))'), el('td', ''), el('td', fmtBytes(q), 'num'), el('td', fmtBytes(u), 'num'),
+                 el('td', fmtPct(pct(u, q)), 'num'), el('td', count(sum(all, 'objects')), 'num'));
     t.append(total);
     box.append(t);
     if (all.some(b => b.quota_bytes === null || b.used_bytes === null)) {
@@ -1024,10 +1070,11 @@ PAGE = r"""<!doctype html>
 
   function reportCsv(r) {
     const quote = v => '"' + String(v === null || v === undefined ? '' : v).replace(/"/g, '""') + '"';
-    const lines = [['tenant', 'compte', 'bucket', 'quota_octets', 'utilisation_octets', 'utilisation_pct', 'remarque', 'edite_le']];
+    const iso = ms => { const d = new Date(Number(ms)); return ms && Number.isFinite(d.getTime()) ? d.toISOString() : ''; };
+    const lines = [['tenant', 'compte', 'bucket', 'storage_location', 'quota_octets', 'utilisation_octets', 'utilisation_pct', 'objets', 'cree_le', 'edite_le']];
     for (const a of r.accounts) for (const b of a.buckets) {
       const p = pct(b.used_bytes, b.quota_bytes);
-      lines.push([r.tenant, a.account, b.name, b.quota_bytes, b.used_bytes, p === null ? '' : Math.round(p * 10) / 10, b.error || '', r.generated_at]);
+      lines.push([r.tenant, a.account, b.name, b.storage_location, b.quota_bytes, b.used_bytes, p === null ? '' : Math.round(p * 10) / 10, b.objects, iso(b.created), r.generated_at]);
     }
     return '\ufeff' + lines.map(l => l.map(quote).join(';')).join('\r\n') + '\r\n';
   }
@@ -1133,23 +1180,34 @@ def call_api(func):
     return value, log.getvalue().strip(), aborted
 
 
+def _names_and_info(entries_by_account):
+    """{account: [entries]} -> ({account: [names]}, {account: {name: entry}})."""
+    names = {account: [e['name'] for e in entries] for account, entries in entries_by_account.items()}
+    info = {account: {e['name']: e for e in entries} for account, entries in entries_by_account.items()}
+    return names, info
+
+
 def search_tenant(config, tenant):
-    """Return {prefix, accounts: {id: [buckets]}, log, has_error} for sa-<tenant>-*."""
+    """Return {prefix, accounts: {id: [buckets]}, info: {id: {bucket: listing entry}}, log, has_error} for sa-<tenant>-*.
+
+    The listing already carries each bucket's quota, usage, storage location and settings, so the
+    page can show them without another call.
+    """
     prefix = f'sa-{tenant}-'
 
     def work():
-        return {
-            account['id']: hm.list_bucket_names(config, account['id'])
-            for account in hm.list_accounts(config, prefix=prefix)
-        }
+        return {account['id']: hm.list_buckets_info(config, account['id'])
+                for account in hm.list_accounts(config, prefix=prefix)}
 
-    accounts, log, aborted = call_api(work)
+    entries, log, aborted = call_api(work)
+    names, info = _names_and_info(entries or {})
     has_error = aborted or any(
         line.startswith(('Error', 'Network error')) for line in log.splitlines()
     )
     return {
         'prefix': prefix,
-        'accounts': dict(sorted((accounts or {}).items())),
+        'accounts': dict(sorted(names.items())),
+        'info': info,
         'log': log,
         'has_error': has_error,
     }
@@ -1283,106 +1341,52 @@ def tenant_locations(config):
     return result
 
 
-def _find_number(value, include, exclude=None):
-    """First (key, number) anywhere in a parsed JSON document whose key matches `include` and not `exclude`."""
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if (isinstance(item, (int, float)) and not isinstance(item, bool)
-                    and include.search(key) and not (exclude and exclude.search(key))):
-                return key, item
-        children = value.values()
-    elif isinstance(value, list):
-        children = value
-    else:
+def _as_number(value):
+    """A number from an int/float or a numeric string; None for anything else (including booleans)."""
+    if isinstance(value, bool):
         return None
-    for child in children:
-        found = _find_number(child, include, exclude)
-        if found:
-            return found
-    return None
-
-
-def read_quota_and_usage(details, usage_key=None):
-    """(quota_bytes, used_bytes, usage_key_found) from a bucket's GET response.
-
-    The response format is not documented, so keys are found by pattern; `usage_key`
-    (config.json) names the usage field exactly when the patterns pick the wrong one.
-    Anything not found is None.
-    """
-    quota = None
-    for pattern in QUOTA_PATTERNS:
-        quota = _find_number(details, pattern, QUOTA_EXCLUDE)
-        if quota:
-            break
-    usage = None
-    if usage_key:
-        usage = _find_number(details, re.compile('^' + re.escape(usage_key) + '$', re.I))
-    else:
-        for pattern in USAGE_PATTERNS:
-            usage = _find_number(details, pattern, USAGE_EXCLUDE)
-            if usage:
-                break
-    return (quota[1] if quota else None, usage[1] if usage else None, usage[0] if usage else None)
+    if isinstance(value, (int, float)):
+        return value
+    try:
+        return int(str(value).strip())
+    except ValueError:
+        return None
 
 
 def build_report(config, tenant):
-    """Per-tenant report: every bucket of the tenant's accounts with its quota and usage.
+    """Per-tenant report: every bucket of the tenant's accounts with its quota, usage and object count.
 
-    One GET /container/<name> per bucket (plus the account and bucket listings), so it only
-    runs on demand and stops at MAX_REPORT_BUCKETS. Accounts are matched on the exact tenant
-    (sa-act-0001 belongs to "act", sa-act-geoportal-0001 to "act-geoportal").
+    All of it comes from the bucket listing (one call per account), so there is no call per bucket.
+    Accounts are matched on the exact tenant (sa-act-0001 belongs to "act", sa-act-geoportal-0001 to
+    "act-geoportal"). A value the listing does not carry is None.
     """
-    usage_key = config.get('usage_key')
-    usage_key = usage_key if isinstance(usage_key, str) and LABEL_RE.match(usage_key) else None
     result = {
         'tenant': tenant,
         'generated_at': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'),
-        'accounts': [], 'usage_key': usage_key, 'warnings': [], 'truncated': False,
+        'accounts': [], 'warnings': [],
     }
-    found_keys = set()
 
     def work():
-        count = 0
         for account in hm.list_accounts(config, prefix=f'sa-{tenant}-'):
             if tenant_of(account['id']) != tenant:
                 continue
-            rows = []
-            for name in hm.list_bucket_names(config, account['id']):
-                if count >= MAX_REPORT_BUCKETS:
-                    result['truncated'] = True
-                    break
-                count += 1
-                row = {'name': name, 'quota_bytes': None, 'used_bytes': None, 'error': None}
-                status, text, error = _http(lambda: hm.get_bucket(config, name))
-                if error or status != 200:
-                    row['error'] = error or f'HTTP {status}'
-                else:
-                    try:
-                        row['quota_bytes'], row['used_bytes'], key = read_quota_and_usage(json.loads(text), usage_key)
-                    except json.JSONDecodeError:
-                        row['error'] = 'réponse illisible'
-                    else:
-                        if key:
-                            found_keys.add(key)
-                rows.append(row)
+            rows = [{
+                'name': e['name'],
+                'storage_location': e.get('storage_location') if isinstance(e.get('storage_location'), str) else None,
+                'quota_bytes': _as_number(e.get('hard_quota')),
+                'used_bytes': _as_number(e.get('bytes_used')),
+                'objects': _as_number(e.get('object_count')),
+                'created': str(e['creation_time']) if e.get('creation_time') is not None else None,
+            } for e in hm.list_buckets_info(config, account['id'])]
             result['accounts'].append({'account': account['id'], 'buckets': rows})
-            if result['truncated']:
-                break
 
     _, log, aborted = call_api(work)
-    rows = [b for a in result['accounts'] for b in a['buckets']]
     if aborted:
         result['warnings'].append(MSG_NO_CREDS)
-    if result['truncated']:
-        result['warnings'].append(f'Rapport limité aux {MAX_REPORT_BUCKETS} premiers buckets.')
-    if any(b['error'] for b in rows):
-        result['warnings'].append(f"{sum(1 for b in rows if b['error'])} bucket(s) illisibles (voir la colonne Remarque).")
-    if any(not b['error'] for b in rows) and not found_keys:
-        result['warnings'].append(
-            "Aucune utilisation trouvée dans les réponses de l'API. Ouvre « Voir » sur un bucket pour trouver le nom du champ, "
-            'puis ajoute "usage_key": "<nom>" à config.json.')
-    if found_keys:
-        result['usage_key'] = usage_key or ', '.join(sorted(found_keys))
+    rows = [b for a in result['accounts'] for b in a['buckets']]
+    missing = sum(1 for b in rows if b['quota_bytes'] is None or b['used_bytes'] is None)
+    if missing:
+        result['warnings'].append(f"{missing} bucket(s) sans quota ou sans utilisation dans le listage de l'API.")
     result['log'] = log
     result['has_error'] = aborted or any(line.startswith(('Error', 'Network error')) for line in log.splitlines())
     return result
@@ -1398,7 +1402,7 @@ def find_bucket(config, name, scan):
     found_without_owner, scanned, message, log, has_error}.
     """
     result = {
-        'name': name, 'mode': 'scan' if scan else 'direct', 'accounts': {},
+        'name': name, 'mode': 'scan' if scan else 'direct', 'accounts': {}, 'info': {},
         'found_without_owner': False, 'scanned': 0, 'message': '', 'has_error': False, 'status': None,
     }
 
@@ -1407,9 +1411,10 @@ def find_bucket(config, name, scan):
             needle = name.lower()
             accounts = hm.list_accounts(config, prefix='sa-')
             for account in accounts:
-                matches = [b for b in hm.list_bucket_names(config, account['id']) if needle in b.lower()]
+                matches = [e for e in hm.list_buckets_info(config, account['id']) if needle in e['name'].lower()]
                 if matches:
-                    result['accounts'][account['id']] = matches
+                    result['accounts'][account['id']] = [e['name'] for e in matches]
+                    result['info'][account['id']] = {e['name']: e for e in matches}
             result['scanned'] = len(accounts)
             return
         if not BUCKET_NAME_RE.match(name):

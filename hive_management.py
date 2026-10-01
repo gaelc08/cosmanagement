@@ -537,13 +537,16 @@ def list_accounts(config, prefix=None):
     return accounts
 
 
-def list_bucket_names(config, account_id):
-    """List container/bucket names under one storage account.
+def list_buckets_info(config, account_id):
+    """List the buckets of one storage account, with everything the listing returns.
 
-    Per the API guide (Chapter 10, "Container / bucket listing"), this is
-    a resource-intensive operation on the system -- fine to run on demand
-    from this CLI, but it should not be called in a tight loop or wired
-    into an automated/scheduled process.
+    GET /accounts/<id>/containers gives one entry per bucket: name, creation_time (ms), storage_location
+    (by name), hard_quota and bytes_used (bytes), object_count, versioning_state, lifecycle / replication /
+    notification / object-lock / inventory settings... Returns a list of dicts, each with at least `name`.
+
+    Per the API guide (Chapter 10, "Container / bucket listing"), this is a resource-intensive operation
+    on the system -- fine to run on demand, but it should not be called in a tight loop or wired into an
+    automated/scheduled process.
     """
     base_url = f"{config['api']['base_url']}/accounts/{account_id}/containers"
     ssl_verify = get_ssl_verify(config)
@@ -556,12 +559,18 @@ def list_bucket_names(config, account_id):
             error_label=f"listing buckets for {account_id}",
         )
 
-    names = []
+    entries = []
     for entry in raw_entries:
-        name = entry.get('name') if isinstance(entry, dict) else entry
-        if name:
-            names.append(name)
-    return names
+        if isinstance(entry, dict) and entry.get('name'):
+            entries.append(entry)
+        elif isinstance(entry, str) and entry:
+            entries.append({'name': entry})
+    return entries
+
+
+def list_bucket_names(config, account_id):
+    """List container/bucket names under one storage account (see list_buckets_info for the cost)."""
+    return [entry['name'] for entry in list_buckets_info(config, account_id)]
 
 
 def list_hive_buckets(config, account_prefix='sa-ctie-hive-'):
