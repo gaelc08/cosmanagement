@@ -936,6 +936,27 @@ PAGE = r"""<!doctype html>
 """
 
 
+LOOPBACK_NAMES = {'127.0.0.1', 'localhost', '[::1]'}
+
+
+def host_allowed(value, allowed_hosts):
+    """Is this Host (or Origin host) one we serve? Loopback names with any port, or a name given with --allow-host.
+
+    Any port is fine for loopback: through a port forward (VS Code Remote, ssh -L) the browser's local port
+    differs from the server's. DNS rebinding goes through a domain name, which is still refused.
+    """
+    if value in allowed_hosts:
+        return True
+    value = value.strip().lower()
+    if value.startswith('['):
+        name = value[:value.find(']') + 1]
+        rest = value[len(name):]
+    else:
+        name, sep, rest = value.partition(':')
+        rest = sep + rest
+    return name in LOOPBACK_NAMES and (rest == '' or (rest.startswith(':') and rest[1:].isdigit()))
+
+
 def build_allowed_hosts(port, extra=()):
     """Host header values accepted by the server: loopback, plus any --allow-host given.
 
@@ -1618,12 +1639,12 @@ class Handler(BaseHTTPRequestHandler):
     def _host_ok(self):
         # Refuse foreign Host headers so a web page can't reach this server via DNS rebinding.
         host = self.headers.get('Host', '')
-        if host in self.allowed_hosts:
+        if host_allowed(host, self.allowed_hosts):
             return True
         shown = host[:100]
         print(f'Refused a request whose Host header is {shown!r}. If you reach this page under that name '
               f'(machine name, tunnel, proxy), restart with: --allow-host {shown}', file=sys.stderr)
-        self._json(403, {'error': f'forbidden host: {shown!r}. Open http://127.0.0.1:<port>/ or http://localhost:<port>/, '
+        self._json(403, {'error': f'forbidden host: {shown!r}. Open http://127.0.0.1:<port>/ or http://localhost:<port>/ (any port), '
                                   f'or restart cos_ui.py with --allow-host {shown} to accept that name.'})
         return False
 
@@ -1669,7 +1690,7 @@ class Handler(BaseHTTPRequestHandler):
         # Writes must come from this page: same-origin, and JSON (which a
         # cross-site form can't send without a CORS preflight we never allow).
         origin = self.headers.get('Origin')
-        if origin and urlparse(origin).netloc not in self.allowed_hosts:
+        if origin and not host_allowed(urlparse(origin).netloc, self.allowed_hosts):
             self._json(403, {'error': 'forbidden origin'})
             return
         route = POST_ROUTES.get(urlparse(self.path).path)
