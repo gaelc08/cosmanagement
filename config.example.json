@@ -405,5 +405,9 @@
     "example-tenant": {
       "storage_locations": ["cv-example-01", "cv-example-02"]
     }
+  },
+  "cos2pag": {
+    "config": "/path/to/cos2pag/config.yaml",
+    "env_file": "/path/to/cos2pag/.env"
   }
 }

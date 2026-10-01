@@ -40,9 +40,11 @@ import datetime
 import io
 import ipaddress
 import json
+import logging
 import re
 import sys
 import threading
+import types
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -288,6 +290,7 @@ PAGE = r"""<!doctype html>
   let locationLabels = {};   // name suffix -> label, from config.json
   let tenants = [];
   let tenantSource = 'accounts';
+  let replicationConfigured = false;   // config.json has a "cos2pag" section
 
   // sa-<tenant>-<number>; mirrors tenant_of() on the server
   function tenantOf(account) {
@@ -578,6 +581,65 @@ PAGE = r"""<!doctype html>
     box.append(form);
   }
 
+  // ---- replication to PAG (cos2pag) -------------------------------------------------
+  const STEP_STATE = {
+    preview: {CHANGED: 'À faire', SKIPPED: 'Déjà en place', OK: 'OK'},
+    run: {CHANGED: 'Fait', SKIPPED: 'Déjà en place', OK: 'OK'},
+  };
+
+  function openReplication(account, bucket) {
+    const box = panelHeader('Répliquer vers PAG : ' + bucket + ' (' + account + ')');
+    const close = el('button', 'Fermer', 'small secondary');
+    close.type = 'button';
+    close.addEventListener('click', closeBucketPanel);
+    if (!replicationConfigured) {
+      box.append(el('p', 'La réplication vers PAG n\'est pas configurée. Installe cos2pag dans le même environnement Python (pip install <dossier de cos2pag>) ' +
+        'et ajoute à config.json : "cos2pag": {"config": "<chemin du config.yaml de cos2pag>", "env_file": "<chemin de son .env>"}.', 'empty'), close);
+      return;
+    }
+    box.append(el('p', 'Enchaîne ce que fait cos2pag : COS (ACL, liste blanche d\'IP et notifications du bucket), PAG (partition, dépôt, buffer, cycle de vie) puis ' +
+      'PDR (tâche de réplication). Chaque étape est idempotente. « Simuler » n\'envoie aucune modification ; « Exécuter » n\'est possible qu\'après une simulation réussie pour ce tenant.', 'empty'));
+
+    const form = el('div', undefined, 'grid-form');
+    const tenant = el('input');
+    tenant.type = 'text'; tenant.maxLength = 64; tenant.value = tenantOf(account).toUpperCase();
+    form.append(el('label', 'Tenant PAG (partition)'), tenant,
+                el('small', 'Nom exact de la partition PAG. À vérifier : plusieurs tenants partagent un préfixe (ME, ME-SR, ME-SRE...).'));
+    const buttons = el('div', undefined, 'buttons');
+    const simulate = el('button', 'Simuler (dry-run)'); simulate.type = 'button';
+    const run = el('button', 'Exécuter', 'secondary'); run.type = 'button'; run.disabled = true;
+    buttons.append(simulate, run, close);
+    form.append(buttons);
+    const result = el('div');
+    box.append(form, result);
+
+    let simulatedFor = null;
+    tenant.addEventListener('input', () => { simulatedFor = null; run.disabled = true; });
+
+    async function call(dry) {
+      const name = tenant.value.trim();
+      if (!name) { setStatus('Saisis le tenant PAG.', true); return; }
+      if (!dry && !confirm('Mettre en place la réplication de "' + bucket + '" vers la partition PAG "' + name + '" ?\n\n' +
+          'Cela modifie le bucket côté COS (ACL, liste blanche d\'IP, notifications) et crée ou met à jour des objets dans PAG et PDR.')) return;
+      simulate.disabled = true; run.disabled = true;
+      setStatus(dry ? 'Simulation en cours...' : 'Mise en place de la réplication en cours...', false);
+      result.textContent = '';
+      const out = await post(dry ? '/api/replication/preview' : '/api/replication/run', {bucket, tenant: name});
+      simulate.disabled = false;
+      showLog(out.log);
+      setStatus(out.error || out.message, !!out.error || !out.ok);
+      if (out.steps && out.steps.length) {
+        const states = STEP_STATE[dry ? 'preview' : 'run'];
+        result.append(table(['Étape', 'État', 'Détail'], out.steps.map(st => [st.name, {text: states[st.status] || st.status, cls: st.status === 'CHANGED' ? 'ok' : undefined}, st.detail])));
+      }
+      if (dry && out.ok) { simulatedFor = name; run.disabled = false; }
+      else if (!dry && out.ok) { simulatedFor = null; }
+      else { run.disabled = simulatedFor !== name; }
+    }
+    simulate.addEventListener('click', () => call(true));
+    run.addEventListener('click', () => call(false));
+  }
+
   async function deleteBucket(account, bucket) {
     const typed = prompt('Supprimer définitivement le bucket "' + bucket + '" (compte ' + account + ').\n' +
                          'Cette action est irréversible. Tape le nom du bucket pour confirmer.');
@@ -613,7 +675,7 @@ PAGE = r"""<!doctype html>
         for (const b of list) {
           const li = el('li');
           li.append(b);
-          for (const [act, label, cls] of [['view', 'Voir', 'secondary'], ['edit', 'Modifier', 'secondary'], ['delete', 'Supprimer', 'danger']]) {
+          for (const [act, label, cls] of [['view', 'Voir', 'secondary'], ['edit', 'Modifier', 'secondary'], ['replicate', 'Répliquer vers PAG', 'secondary'], ['delete', 'Supprimer', 'danger']]) {
             const btn = el('button', label, 'small ' + cls);
             btn.dataset.act = act; btn.dataset.bucket = b; btn.dataset.account = account;
             li.append(btn);
@@ -643,6 +705,7 @@ PAGE = r"""<!doctype html>
     if (act) {
       const {account, bucket} = act.dataset;
       if (act.dataset.act === 'delete') await deleteBucket(account, bucket);
+      else if (act.dataset.act === 'replicate') openReplication(account, bucket);
       else await openBucket(account, bucket, act.dataset.act);
       return;
     }
@@ -924,6 +987,7 @@ PAGE = r"""<!doctype html>
       const info = await (await fetch('/api/info')).json();
       tenantLocations = info.tenants || {};
       locationLabels = info.labels || {};
+      replicationConfigured = !!(info.replication && info.replication.configured);
       allLocations = info.storage_locations || [];
       for (const name of allLocations) { const o = el('option'); o.value = name; $('locations-list').append(o); }
       const envs = info.environments || [];
@@ -1878,7 +1942,104 @@ def handle_bulk_run(config, body):
     return 200, {'results': results, 'credentials': credentials, 'log': log}
 
 
+def replication_settings(config):
+    """config.json's optional "cos2pag": {"config": "<path to cos2pag's config.yaml>", "env_file": "<path to its .env>"}.
+    Returns {config, env_file} or None when replication to PAG is not configured."""
+    section = config.get('cos2pag')
+    if not isinstance(section, dict) or not isinstance(section.get('config'), str) or not section['config'].strip():
+        return None
+    env_file = section.get('env_file')
+    return {'config': section['config'].strip(), 'env_file': env_file.strip() if isinstance(env_file, str) and env_file.strip() else None}
+
+
+def _cos2pag():
+    """The cos2pag pieces we use, or None if the package is not installed (it is optional)."""
+    try:
+        from cos2pag.config import ConfigError, load_config
+        from cos2pag.http_client import ApiError
+        from cos2pag.sync import sync_bucket
+    except ImportError:
+        return None
+    return types.SimpleNamespace(ConfigError=ConfigError, ApiError=ApiError, load_config=load_config, sync_bucket=sync_bucket)
+
+
+class _LogLines(logging.Handler):
+    """Collects cos2pag's log records so the page can show them."""
+
+    def __init__(self):
+        super().__init__()
+        self.lines = []
+
+    def emit(self, record):
+        self.lines.append(f'{record.levelname:7s} {record.getMessage()}')
+
+
+def run_replication(config, bucket, tenant, dry_run):
+    """Set up (or, with dry_run, preview) the replication of a bucket to PAG with cos2pag's sync_bucket.
+
+    cos2pag does the whole job (COS ACL / firewall / notifications, PAG partition and repository, PDR task) and is
+    idempotent; it keeps its own config file and secrets, referenced from config.json. Returns
+    {ok, dry_run, message, steps: [{name, status, detail}], log}.
+    """
+    result = {'ok': False, 'dry_run': dry_run, 'message': '', 'steps': [], 'log': ''}
+    settings = replication_settings(config)
+    if settings is None:
+        result['message'] = ('Réplication non configurée : ajoute "cos2pag": {"config": "<chemin du config.yaml de cos2pag>", '
+                             '"env_file": "<chemin de son .env>"} à config.json.')
+        return result
+    mods = _cos2pag()
+    if mods is None:
+        result['message'] = "Le paquet cos2pag n'est pas installé : pip install <dossier de cos2pag> dans le même environnement Python."
+        return result
+
+    handler, logger = _LogLines(), logging.getLogger('cos2pag')
+    previous_level = logger.level
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    try:
+        with _api_lock:
+            try:
+                if settings['env_file']:
+                    load_dotenv(settings['env_file'], override=True)
+                report = mods.sync_bucket(mods.load_config(settings['config']), bucket, tenant, dry_run=dry_run)
+            except FileNotFoundError as err:
+                result['message'] = f"Fichier introuvable : {err.filename or err}"
+            except mods.ConfigError as err:
+                result['message'] = f'Configuration de cos2pag : {err}'
+            except mods.ApiError as err:
+                result['message'] = f'Erreur de l\'API : {err}'
+            except LookupError as err:
+                result['message'] = f'{err}'
+            except Exception as err:  # e.g. boto3 / network errors from a step: report them instead of dropping the request
+                result['message'] = f'{type(err).__name__} : {err}'
+            else:
+                result['steps'] = [
+                    {'name': step.name, 'status': 'SKIPPED' if step.skipped else 'CHANGED' if step.changed else 'OK', 'detail': step.detail}
+                    for step in report.steps
+                ]
+                result['ok'] = True
+                result['message'] = (f'Simulation terminée pour {bucket} (aucune modification envoyée).' if dry_run
+                                     else f'Réplication de {bucket} vers la partition PAG {tenant} mise en place.')
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous_level)
+    result['log'] = '\n'.join(handler.lines)
+    return result
+
+
+def handle_replication(config, body, dry_run):
+    bucket = _existing_bucket(body)
+    if not bucket:
+        return 400, {'error': 'Nom de bucket invalide.'}
+    tenant = _text(body, 'tenant')
+    if not LABEL_RE.match(tenant):
+        return 400, {'error': 'Tenant PAG invalide (lettres, chiffres, . - et _ uniquement).'}
+    return 200, run_replication(config, bucket, tenant, dry_run)
+
+
 POST_ROUTES = {
+    '/api/replication/preview': lambda config, body: handle_replication(config, body, dry_run=True),
+    '/api/replication/run': lambda config, body: handle_replication(config, body, dry_run=False),
     '/api/bucket/create': handle_create_bucket,
     '/api/bucket/get': handle_get_bucket,
     '/api/bucket/update': handle_update_bucket,
@@ -1943,6 +2104,7 @@ class Handler(BaseHTTPRequestHandler):
                 'storage_locations': sorted(known),
                 'tenants': by_tenant,
                 'labels': location_labels(self.config),
+                'replication': {'configured': replication_settings(self.config) is not None},
             })
         elif url.path == '/api/tenants':
             self._json(200, list_tenants(self.config, self.locations))
