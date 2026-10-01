@@ -123,6 +123,10 @@ PAGE = r"""<!doctype html>
   #find { margin-top:10px; }
   #search input, #find input { min-width:200px; }
   #find-help { margin:4px 0 0; }
+  .grid-form .tenant-hint { font-size:12px; }
+  .grid-form .tenant-hint.ok { color:var(--ok); }
+  .grid-form .tenant-hint.bad { color:var(--err); }
+  .tenant-hint button { margin-left:6px; }
   .chips { display:flex; flex-wrap:wrap; gap:6px; }
   #tenants-panel .chips { margin-top:8px; }
   .grid-form .chips { grid-column:2; margin-top:-4px; }
@@ -614,10 +618,13 @@ PAGE = r"""<!doctype html>
     const form = el('div', undefined, 'grid-form');
     const tenant = el('input');
     tenant.type = 'text'; tenant.maxLength = 64; tenant.value = tenantOf(account).toUpperCase();
+    tenant.setAttribute('list', 'partitions-list');
+    const tenantHint = el('small', '', 'tenant-hint');
     const retention = el('input');
     retention.type = 'text'; retention.inputMode = 'numeric'; retention.placeholder = 'valeur de cos2pag (pag.lifecycle)';
     form.append(el('label', 'Tenant PAG (partition)'), tenant,
-                el('small', 'Nom exact de la partition PAG. À vérifier : plusieurs tenants partagent un préfixe (ME, ME-SR, ME-SRE...).'),
+                el('small', 'Nom exact de la partition PAG (une par tenant, la casse compte). À vérifier : plusieurs tenants partagent un préfixe (ME, ME-SR, ME-SRE...).'),
+                tenantHint,
                 el('label', 'Rétention (jours)'), retention,
                 el('small', 'Durée de conservation des versions non courantes sur PAG (--noncurrent-expiration-days). Vide : on garde la valeur du config.yaml de cos2pag.'));
     const buttons = el('div', undefined, 'buttons');
@@ -740,6 +747,56 @@ PAGE = r"""<!doctype html>
     }
     simulate.addEventListener('click', () => call(true));
     run.addEventListener('click', () => call(false));
+
+    // ---- the tenant must name an existing partition exactly, or none at all -----------------
+    // cos2pag looks the partition up by exact name; PAG refuses to create one whose name differs only by case.
+    const partitionList = el('datalist');
+    partitionList.id = 'partitions-list';
+    box.append(partitionList);
+    let partitionNames = null, tenantTouched = false;
+
+    function describeTenant() {
+      tenantHint.textContent = '';
+      tenantHint.className = 'tenant-hint';
+      const name = tenant.value.trim();
+      if (partitionNames === null || !name) return;
+      const same = partitionNames.filter(n => n.toLowerCase() === name.toLowerCase());
+      if (partitionNames.includes(name)) {
+        tenantHint.textContent = 'La partition PAG « ' + name + ' » existe : elle sera utilisée, rien n\'est créé.';
+        tenantHint.classList.add('ok');
+      } else if (same.length) {
+        tenantHint.classList.add('bad');
+        tenantHint.append(same.length === 1
+          ? 'Une partition existe sous le nom « ' + same[0] + ' » (casse différente) : cos2pag la recréerait et PAG refuserait. '
+          : 'Plusieurs partitions ne diffèrent que par la casse : ' + same.join(', ') + '. ');
+        for (const n of same) {
+          const use = el('button', 'Utiliser « ' + n + ' »', 'small secondary');
+          use.type = 'button';
+          use.addEventListener('click', () => { tenant.value = n; tenantTouched = true; lock(); downLock(); describeTenant(); });
+          tenantHint.append(use);
+        }
+      } else {
+        tenantHint.textContent = 'Aucune partition « ' + name + ' » : cos2pag la créera avec les réglages new_partition_defaults de son config.yaml.';
+      }
+    }
+    tenant.addEventListener('input', () => { tenantTouched = true; describeTenant(); });
+
+    (async () => {
+      const out = await post('/api/replication/partitions', {});
+      if (out.error || !out.ok) {
+        tenantHint.textContent = 'Partitions PAG illisibles : ' + (out.error || out.message);
+        tenantHint.classList.add('bad');
+        return;
+      }
+      partitionNames = out.names;
+      for (const n of partitionNames) { const o = el('option'); o.value = n; partitionList.append(o); }
+      if (!tenantTouched) {   // the upper-cased guess is only a guess: prefer the partition that really exists
+        const guess = tenantOf(account).toLowerCase();
+        const best = partitionNames.includes(tenant.value) ? tenant.value : partitionNames.find(n => n.toLowerCase() === guess);
+        if (best && best !== tenant.value) { tenant.value = best; lock(); downLock(); }
+      }
+      describeTenant();
+    })();
   }
 
   async function deleteBucket(account, bucket) {
@@ -2078,6 +2135,24 @@ class _LogLines(logging.Handler):
         self.lines.append(f'{record.levelname:7s} {record.getMessage()}')
 
 
+class ReplicationInputError(Exception):
+    """A request cos2pag should not even be given (shown to the user as is)."""
+
+
+def _check_partition(cfg, tenant):
+    """Refuse a tenant that is not an exact partition name when one exists that differs only by case.
+
+    cos2pag looks the partition up by exact name, finds nothing, tries to create it, and PAG answers that it
+    already exists. A tenant with no similar partition at all is fine: cos2pag creates it.
+    """
+    modules = pag_teardown.load_modules()
+    if modules is None:
+        return
+    conflict = pag_teardown.partition_conflict(pag_teardown.partition_names(modules, cfg), tenant)
+    if conflict:
+        raise ReplicationInputError(conflict)
+
+
 def _cos2pag_call(config, dry_run, work):
     """Run work(cfg, mods) -> (steps, message) with cos2pag's configuration loaded.
 
@@ -2106,6 +2181,8 @@ def _cos2pag_call(config, dry_run, work):
                 if settings['env_file']:
                     load_dotenv(settings['env_file'], override=True)
                 result['steps'], result['message'] = work(mods.load_config(settings['config']), mods)
+            except ReplicationInputError as err:
+                result['message'] = str(err)
             except FileNotFoundError as err:
                 result['message'] = f"Fichier introuvable : {err.filename or err}"
             except mods.ConfigError as err:
@@ -2137,6 +2214,7 @@ def run_replication(config, bucket, tenant, dry_run, noncurrent_days=None):
     status, detail}], log}.
     """
     def work(cfg, mods):
+        _check_partition(cfg, tenant)
         extra = {} if noncurrent_days is None else {'noncurrent_expiration_days': noncurrent_days}
         report = mods.sync_bucket(cfg, bucket, tenant, dry_run=dry_run, **extra)
         steps = [
@@ -2255,6 +2333,30 @@ def replication_status(config, bucket):
     return result
 
 
+def replication_partitions(config, tenant):
+    """The PAG partitions (one per tenant) and how `tenant`, if given, matches them. Read-only."""
+    held = {}
+
+    def work(cfg, mods):
+        modules = pag_teardown.load_modules()
+        if modules is None:
+            raise mods.ConfigError('les clients de cos2pag ne sont pas importables')
+        held['names'] = sorted(pag_teardown.partition_names(modules, cfg), key=str.casefold)
+        return [], ''
+
+    result = _cos2pag_call(config, True, work)
+    result['names'] = held.get('names', [])
+    result['match'] = pag_teardown.resolve_partition(result['names'], tenant) if tenant and result['ok'] else None
+    return result
+
+
+def handle_replication_partitions(config, body):
+    tenant = _text(body, 'tenant')
+    if tenant and not LABEL_RE.match(tenant):
+        return 400, {'error': 'Tenant PAG invalide (lettres, chiffres, . - et _ uniquement).'}
+    return 200, replication_partitions(config, tenant)
+
+
 def handle_replication_status(config, body):
     bucket = _existing_bucket(body)
     if not bucket:
@@ -2296,6 +2398,7 @@ def handle_replication(config, body, dry_run):
 
 
 POST_ROUTES = {
+    '/api/replication/partitions': handle_replication_partitions,
     '/api/replication/teardown/preview': lambda config, body: handle_teardown(config, body, dry_run=True),
     '/api/replication/teardown/run': lambda config, body: handle_teardown(config, body, dry_run=False),
     '/api/replication/status': handle_replication_status,

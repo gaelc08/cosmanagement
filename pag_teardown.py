@@ -49,6 +49,45 @@ def load_modules():
     )
 
 
+class PartitionNameError(Exception):
+    """The tenant does not name a PAG partition exactly, but one that differs only by case."""
+
+
+def partition_names(mods, cfg):
+    """Names of the PAG partitions (one per tenant), read with cos2pag's own client."""
+    pag_cfg = cfg['pag']
+    client = mods.PagClient(pag_cfg['base_url'], _session(mods, pag_cfg), timeout=pag_cfg.get('timeout', 30))
+    return [partition['name'] for partition in client.list_partitions() if partition.get('name')]
+
+
+def resolve_partition(names, tenant):
+    """How a tenant name matches the existing partitions: {match: exact | case | ambiguous | none, name | candidates}.
+
+    cos2pag compares partition names exactly, case included, while PAG refuses to create a partition whose name
+    differs from an existing one only by case ("the partition does already exist").
+    """
+    if tenant in names:
+        return {'match': 'exact', 'name': tenant}
+    folded = [name for name in names if name.casefold() == tenant.casefold()]
+    if len(folded) == 1:
+        return {'match': 'case', 'name': folded[0]}
+    if folded:
+        return {'match': 'ambiguous', 'candidates': sorted(folded)}
+    return {'match': 'none'}
+
+
+def partition_conflict(names, tenant):
+    """The error to show when `tenant` is not an exact partition name but an existing one differs only by case, else None."""
+    found = resolve_partition(names, tenant)
+    if found['match'] == 'case':
+        return (f"Une partition PAG existe sous le nom « {found['name']} » (casse différente de « {tenant} »). cos2pag compare les noms "
+                f"exactement : il tenterait de la recréer et PAG refuserait (« already exist »). Utilise exactement « {found['name']} ».")
+    if found['match'] == 'ambiguous':
+        return (f"Plusieurs partitions PAG ne diffèrent de « {tenant} » que par la casse : {', '.join(found['candidates'])}. "
+                'Choisis le nom exact.')
+    return None
+
+
 def _session(mods, section):
     auth = mods.AuthConfig.from_dict(section.get('auth', {}))
     return mods.build_session(auth, verify_ssl=section.get('verify_ssl', True))
@@ -102,6 +141,9 @@ def teardown(mods, cfg, bucket, tenant, level, dry_run):
 
     def pag_delete():
         client = mods.PagClient(pag_cfg['base_url'], _session(mods, pag_cfg), timeout=pag_cfg.get('timeout', 30), dry_run=dry_run)
+        conflict = partition_conflict([p['name'] for p in client.list_partitions() if p.get('name')], tenant)
+        if conflict:
+            raise PartitionNameError(conflict)
         partition = client.find_partition_optional(tenant)
         if partition is None:
             return 'SKIPPED', f"partition PAG '{tenant}' introuvable : rien à supprimer"
@@ -173,6 +215,9 @@ def teardown(mods, cfg, bucket, tenant, level, dry_run):
             status, detail = action()
         except KeyError:
             raise  # a missing key in cos2pag's config: the caller reports it as a configuration error
+        except PartitionNameError as err:
+            steps.append({'name': name, 'status': 'FAILED', 'detail': str(err)})
+            failed = True
         except Exception as err:  # keep the steps already done in the report instead of losing them
             steps.append({'name': name, 'status': 'FAILED', 'detail': f'{type(err).__name__} : {err}'})
             failed = True
