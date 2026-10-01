@@ -53,6 +53,7 @@ import requests
 from dotenv import load_dotenv
 
 import hive_management as hm
+import pag_teardown
 
 TENANT_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$')
 ACCOUNT_RE = re.compile(r'^sa-[A-Za-z0-9][A-Za-z0-9_-]{0,127}$')
@@ -588,6 +589,10 @@ PAGE = r"""<!doctype html>
     run: {CHANGED: 'Fait', SKIPPED: 'Déjà en place', OK: 'OK'},
   };
 
+  const TEARDOWN_STATE = {
+    preview: {CHANGED: 'À faire', SKIPPED: 'Rien à faire', FAILED: 'Échec', NOT_RUN: 'Non exécuté'},
+    run: {CHANGED: 'Fait', SKIPPED: 'Rien à faire', FAILED: 'Échec', NOT_RUN: 'Non exécuté'},
+  };
   const DAY_NAMES = {sunday: 'dimanche', monday: 'lundi', tuesday: 'mardi', wednesday: 'mercredi', thursday: 'jeudi', friday: 'vendredi', saturday: 'samedi'};
 
   function openReplication(account, bucket) {
@@ -648,6 +653,68 @@ PAGE = r"""<!doctype html>
       if (prefill && days !== null && !retention.value.trim()) retention.value = String(days);
     }
     refreshStatus(true);
+
+    // ---- suspend or undo --------------------------------------------------------------
+    const down = el('fieldset');
+    down.append(el('legend', 'Suspendre ou défaire la réplication'));
+    for (const [value, title, text] of [
+      ['suspend', 'Suspendre la tâche dans PDR', 'Désactive la planification et les notifications de la tâche, sans rien supprimer. Réversible : « Exécuter » plus haut reprend la réplication.'],
+      ['undo', 'Tout défaire, garder le dépôt PAG', 'Supprime la tâche PDR et retire de COS l\'ACL et l\'IP de PDR ajoutées pour la réplication. Le dépôt PAG, ses données et son cycle de vie sont conservés.'],
+      ['purge', 'Tout défaire, y compris le dépôt PAG', 'Comme ci-dessus, et supprime le dépôt PAG : les copies archivées sont perdues. Irréversible.'],
+    ]) {
+      const label = el('label');
+      label.style.display = 'block'; label.style.marginBottom = '6px';
+      const radio = el('input');
+      radio.type = 'radio'; radio.name = 'down-level'; radio.value = value; radio.checked = value === 'suspend';
+      label.append(radio, el('strong', ' ' + title), el('div', text, 'empty'));
+      down.append(label);
+    }
+    const downSim = el('button', 'Simuler'); downSim.type = 'button';
+    const downRun = el('button', 'Exécuter', 'danger'); downRun.type = 'button'; downRun.disabled = true;
+    const downButtons = el('div', undefined, 'row-buttons');
+    downButtons.append(downSim, downRun);
+    const downResult = el('div');
+    down.append(downButtons, downResult);
+    box.append(down);
+
+    const level = () => down.querySelector('input[name=down-level]:checked').value;
+    const downKey = () => level() + '|' + tenant.value.trim();
+    let downSimulated = null;
+    const downLock = () => { downSimulated = null; downRun.disabled = true; };
+    down.querySelectorAll('input[name=down-level]').forEach(r => r.addEventListener('change', downLock));
+    tenant.addEventListener('input', downLock);
+
+    async function callDown(dry) {
+      const lv = level(), name = tenant.value.trim();
+      if (lv === 'purge' && !name) { setStatus('Saisis le tenant PAG pour supprimer le dépôt.', true); return; }
+      let typed;
+      if (!dry) {
+        if (lv === 'suspend') {
+          if (!confirm('Suspendre la réplication de "' + bucket + '" ? La tâche PDR n\'est pas supprimée.')) return;
+        } else {
+          const warning = lv === 'purge' ? 'ATTENTION : le dépôt PAG sera supprimé avec les copies archivées. C\'est irréversible.\n\n' : '';
+          typed = prompt(warning + 'Défaire la réplication de "' + bucket + '" : supprimer la tâche PDR et retirer l\'accès ajouté sur COS.\nTape le nom du bucket pour confirmer.');
+          if (typed !== bucket) { setStatus('Opération annulée.', false); return; }
+        }
+      }
+      downSim.disabled = true; downRun.disabled = true;
+      setStatus(dry ? 'Simulation en cours...' : 'Exécution en cours...', false);
+      downResult.textContent = '';
+      const out = await post(dry ? '/api/replication/teardown/preview' : '/api/replication/teardown/run', {bucket, tenant: name, level: lv, confirm: typed});
+      downSim.disabled = false;
+      showLog(out.log);
+      setStatus(out.error || out.message, !!out.error || !out.ok);
+      if (out.steps && out.steps.length) {
+        const states = TEARDOWN_STATE[dry ? 'preview' : 'run'];
+        downResult.append(table(['Étape', 'État', 'Détail'], out.steps.map(st => [st.name,
+          {text: states[st.status] || st.status, cls: st.status === 'CHANGED' ? 'ok' : st.status === 'FAILED' ? 'fail' : undefined}, st.detail])));
+      }
+      if (dry && out.ok) { downSimulated = downKey(); downRun.disabled = false; }
+      else { downSimulated = null; downRun.disabled = true; }
+      if (!dry && out.steps && out.steps.length) refreshStatus(false);
+    }
+    downSim.addEventListener('click', () => callDown(true));
+    downRun.addEventListener('click', () => callDown(false));
 
     async function call(dry) {
       const name = tenant.value.trim();
@@ -2011,14 +2078,12 @@ class _LogLines(logging.Handler):
         self.lines.append(f'{record.levelname:7s} {record.getMessage()}')
 
 
-def run_replication(config, bucket, tenant, dry_run, noncurrent_days=None):
-    """Set up (or, with dry_run, preview) the replication of a bucket to PAG with cos2pag's sync_bucket.
+def _cos2pag_call(config, dry_run, work):
+    """Run work(cfg, mods) -> (steps, message) with cos2pag's configuration loaded.
 
-    cos2pag does the whole job (COS ACL / firewall / notifications, PAG partition and repository, PDR task) and is
-    idempotent; it keeps its own config file and secrets, referenced from config.json. `noncurrent_days` overrides
-    the retention of noncurrent object versions (cos2pag's --noncurrent-expiration-days) for this run; applied to
-    an existing replication it updates the lifecycle rule on PAG. Returns {ok, dry_run, message, steps: [{name,
-    status, detail}], log}.
+    Holds the API lock, loads cos2pag's .env and config.yaml, captures its log lines, and turns every failure
+    (not configured, not installed, missing file, bad config, API error, anything else) into a message instead of
+    a dropped request. Returns {ok, dry_run, message, steps, log}.
     """
     result = {'ok': False, 'dry_run': dry_run, 'message': '', 'steps': [], 'log': ''}
     settings = replication_settings(config)
@@ -2040,31 +2105,76 @@ def run_replication(config, bucket, tenant, dry_run, noncurrent_days=None):
             try:
                 if settings['env_file']:
                     load_dotenv(settings['env_file'], override=True)
-                extra = {} if noncurrent_days is None else {'noncurrent_expiration_days': noncurrent_days}
-                report = mods.sync_bucket(mods.load_config(settings['config']), bucket, tenant, dry_run=dry_run, **extra)
+                result['steps'], result['message'] = work(mods.load_config(settings['config']), mods)
             except FileNotFoundError as err:
                 result['message'] = f"Fichier introuvable : {err.filename or err}"
             except mods.ConfigError as err:
                 result['message'] = f'Configuration de cos2pag : {err}'
             except mods.ApiError as err:
                 result['message'] = f'Erreur de l\'API : {err}'
+            except KeyError as err:
+                result['message'] = f'Configuration de cos2pag : clé manquante {err}'
             except LookupError as err:
                 result['message'] = f'{err}'
             except Exception as err:  # e.g. boto3 / network errors from a step: report them instead of dropping the request
                 result['message'] = f'{type(err).__name__} : {err}'
             else:
-                result['steps'] = [
-                    {'name': step.name, 'status': 'SKIPPED' if step.skipped else 'CHANGED' if step.changed else 'OK', 'detail': step.detail}
-                    for step in report.steps
-                ]
-                result['ok'] = True
-                result['message'] = (f'Simulation terminée pour {bucket} (aucune modification envoyée).' if dry_run
-                                     else f'Réplication de {bucket} vers la partition PAG {tenant} mise en place.')
+                result['ok'] = not any(step['status'] == 'FAILED' for step in result['steps'])
     finally:
         logger.removeHandler(handler)
         logger.setLevel(previous_level)
     result['log'] = '\n'.join(handler.lines)
     return result
+
+
+def run_replication(config, bucket, tenant, dry_run, noncurrent_days=None):
+    """Set up (or, with dry_run, preview) the replication of a bucket to PAG with cos2pag's sync_bucket.
+
+    cos2pag does the whole job (COS ACL / firewall / notifications, PAG partition and repository, PDR task) and is
+    idempotent; it keeps its own config file and secrets, referenced from config.json. `noncurrent_days` overrides
+    the retention of noncurrent object versions (cos2pag's --noncurrent-expiration-days) for this run; applied to
+    an existing replication it updates the lifecycle rule on PAG. Returns {ok, dry_run, message, steps: [{name,
+    status, detail}], log}.
+    """
+    def work(cfg, mods):
+        extra = {} if noncurrent_days is None else {'noncurrent_expiration_days': noncurrent_days}
+        report = mods.sync_bucket(cfg, bucket, tenant, dry_run=dry_run, **extra)
+        steps = [
+            {'name': step.name, 'status': 'SKIPPED' if step.skipped else 'CHANGED' if step.changed else 'OK', 'detail': step.detail}
+            for step in report.steps
+        ]
+        message = (f'Simulation terminée pour {bucket} (aucune modification envoyée).' if dry_run
+                   else f'Réplication de {bucket} vers la partition PAG {tenant} mise en place.')
+        return steps, message
+
+    return _cos2pag_call(config, dry_run, work)
+
+
+TEARDOWN_MESSAGES = {
+    'suspend': ('suspendue', 'Suspension de la réplication de {bucket}'),
+    'undo': ('défaite (dépôt PAG conservé)', 'Réplication de {bucket} défaite, dépôt PAG conservé'),
+    'purge': ('défaite, dépôt PAG supprimé', 'Réplication de {bucket} défaite, dépôt PAG supprimé'),
+}
+
+
+def run_teardown(config, bucket, tenant, level, dry_run):
+    """Suspend or undo the replication of a bucket to PAG (see pag_teardown). Returns the same shape as run_replication."""
+    def work(cfg, mods):
+        modules = pag_teardown.load_modules()
+        if modules is None:
+            raise mods.ConfigError("les clients de cos2pag ne sont pas importables")
+        steps = pag_teardown.teardown(modules, cfg, bucket, tenant, level, dry_run)
+        done, label = TEARDOWN_MESSAGES[level]
+        failed = [step['name'] for step in steps if step['status'] == 'FAILED']
+        if failed:
+            message = f"{label.format(bucket=bucket)} interrompue : échec de l'étape {failed[0]}."
+        elif dry_run:
+            message = f'Simulation terminée pour {bucket} (aucune modification envoyée).'
+        else:
+            message = f'Réplication de {bucket} {done}.'
+        return steps, message
+
+    return _cos2pag_call(config, dry_run, work)
 
 
 def _cos2pag_clients():
@@ -2152,6 +2262,21 @@ def handle_replication_status(config, body):
     return 200, replication_status(config, bucket)
 
 
+def handle_teardown(config, body, dry_run):
+    bucket = _existing_bucket(body)
+    if not bucket:
+        return 400, {'error': 'Nom de bucket invalide.'}
+    level = _text(body, 'level')
+    if level not in pag_teardown.LEVELS:
+        return 400, {'error': 'Niveau invalide (suspend, undo ou purge).'}
+    tenant = _text(body, 'tenant')
+    if (level == 'purge' or tenant) and not LABEL_RE.match(tenant):
+        return 400, {'error': 'Tenant PAG invalide (lettres, chiffres, . - et _ uniquement) ; il est requis pour supprimer le dépôt.'}
+    if not dry_run and level != 'suspend' and _text(body, 'confirm') != bucket:
+        return 400, {'error': 'Confirmation incorrecte : tape le nom exact du bucket.'}
+    return 200, run_teardown(config, bucket, tenant, level, dry_run)
+
+
 def handle_replication(config, body, dry_run):
     bucket = _existing_bucket(body)
     if not bucket:
@@ -2171,6 +2296,8 @@ def handle_replication(config, body, dry_run):
 
 
 POST_ROUTES = {
+    '/api/replication/teardown/preview': lambda config, body: handle_teardown(config, body, dry_run=True),
+    '/api/replication/teardown/run': lambda config, body: handle_teardown(config, body, dry_run=False),
     '/api/replication/status': handle_replication_status,
     '/api/replication/preview': lambda config, body: handle_replication(config, body, dry_run=True),
     '/api/replication/run': lambda config, body: handle_replication(config, body, dry_run=False),
