@@ -65,6 +65,7 @@ VAULT_TENANT_RE = re.compile(r'^cv-(.+?)(?:-\d+)?$')
 ACCOUNT_TENANT_RE = re.compile(r'^sa-(.+)-\d+$')
 FIND_RE = re.compile(r'^[A-Za-z0-9._-]{1,255}$')                       # a bucket name, or part of one
 MAX_QUOTA_GB = 1_000_000
+MAX_RETENTION_DAYS = 36500
 MAX_BODY = 1024 * 1024
 CREATED = (201,)
 DONE = (200, 201, 202, 204)
@@ -587,6 +588,8 @@ PAGE = r"""<!doctype html>
     run: {CHANGED: 'Fait', SKIPPED: 'Déjà en place', OK: 'OK'},
   };
 
+  const DAY_NAMES = {sunday: 'dimanche', monday: 'lundi', tuesday: 'mardi', wednesday: 'mercredi', thursday: 'jeudi', friday: 'vendredi', saturday: 'samedi'};
+
   function openReplication(account, bucket) {
     const box = panelHeader('Répliquer vers PAG : ' + bucket + ' (' + account + ')');
     const close = el('button', 'Fermer', 'small secondary');
@@ -598,13 +601,20 @@ PAGE = r"""<!doctype html>
       return;
     }
     box.append(el('p', 'Enchaîne ce que fait cos2pag : COS (ACL, liste blanche d\'IP et notifications du bucket), PAG (partition, dépôt, buffer, cycle de vie) puis ' +
-      'PDR (tâche de réplication). Chaque étape est idempotente. « Simuler » n\'envoie aucune modification ; « Exécuter » n\'est possible qu\'après une simulation réussie pour ce tenant.', 'empty'));
+      'PDR (tâche de réplication). Chaque étape est idempotente. Pour modifier une réplication existante, change la rétention puis simule : ' +
+      'les étapes qui changeraient passent à « À faire ». « Simuler » n\'envoie aucune modification ; « Exécuter » n\'est possible qu\'après une simulation réussie.', 'empty'));
 
+    const statusBox = el('div');
+    box.append(statusBox);
     const form = el('div', undefined, 'grid-form');
     const tenant = el('input');
     tenant.type = 'text'; tenant.maxLength = 64; tenant.value = tenantOf(account).toUpperCase();
+    const retention = el('input');
+    retention.type = 'text'; retention.inputMode = 'numeric'; retention.placeholder = 'valeur de cos2pag (pag.lifecycle)';
     form.append(el('label', 'Tenant PAG (partition)'), tenant,
-                el('small', 'Nom exact de la partition PAG. À vérifier : plusieurs tenants partagent un préfixe (ME, ME-SR, ME-SRE...).'));
+                el('small', 'Nom exact de la partition PAG. À vérifier : plusieurs tenants partagent un préfixe (ME, ME-SR, ME-SRE...).'),
+                el('label', 'Rétention (jours)'), retention,
+                el('small', 'Durée de conservation des versions non courantes sur PAG (--noncurrent-expiration-days). Vide : on garde la valeur du config.yaml de cos2pag.'));
     const buttons = el('div', undefined, 'buttons');
     const simulate = el('button', 'Simuler (dry-run)'); simulate.type = 'button';
     const run = el('button', 'Exécuter', 'secondary'); run.type = 'button'; run.disabled = true;
@@ -613,18 +623,43 @@ PAGE = r"""<!doctype html>
     const result = el('div');
     box.append(form, result);
 
+    const key = () => tenant.value.trim() + '|' + retention.value.trim();
     let simulatedFor = null;
-    tenant.addEventListener('input', () => { simulatedFor = null; run.disabled = true; });
+    const lock = () => { simulatedFor = null; run.disabled = true; };
+    tenant.addEventListener('input', lock);
+    retention.addEventListener('input', lock);
+
+    async function refreshStatus(prefill) {
+      statusBox.textContent = '';
+      const out = await post('/api/replication/status', {bucket});
+      if (out.error || !out.ok) {
+        statusBox.append(el('div', 'État de la réplication illisible : ' + (out.error || out.message), 'empty'));
+        return;
+      }
+      const rows = [['Tâche de réplication (PDR)', out.pdr.found ? 'présente (id ' + out.pdr.id + ')' : 'absente : pas encore répliqué']];
+      const sch = out.pdr.schedule;
+      if (out.pdr.found && sch) {
+        rows.push(['Planification', (sch.enabled ? 'activée' : 'désactivée') + (sch.days.length ? ' : ' + sch.days.map(d => DAY_NAMES[d]).join(', ') : '') +
+                                    (sch.hour !== null && sch.hour !== undefined ? ' à ' + sch.hour + ' h' : '')]);
+      }
+      const days = out.lifecycle.noncurrent_days;
+      rows.push(['Rétention des versions non courantes (PAG)', days !== null ? days + ' jours' : (out.lifecycle.readable ? 'non définie' : 'illisible (pas encore de dépôt sur PAG ?)')]);
+      statusBox.append(el('strong', 'État actuel'), table(['Élément', 'Valeur'], rows));
+      if (prefill && days !== null && !retention.value.trim()) retention.value = String(days);
+    }
+    refreshStatus(true);
 
     async function call(dry) {
       const name = tenant.value.trim();
       if (!name) { setStatus('Saisis le tenant PAG.', true); return; }
-      if (!dry && !confirm('Mettre en place la réplication de "' + bucket + '" vers la partition PAG "' + name + '" ?\n\n' +
+      const days = retention.value.trim();
+      if (!dry && !confirm('Mettre en place la réplication de "' + bucket + '" vers la partition PAG "' + name + '" ?' +
+          (days ? '\nRétention des versions non courantes : ' + days + ' jours.' : '') + '\n\n' +
           'Cela modifie le bucket côté COS (ACL, liste blanche d\'IP, notifications) et crée ou met à jour des objets dans PAG et PDR.')) return;
       simulate.disabled = true; run.disabled = true;
       setStatus(dry ? 'Simulation en cours...' : 'Mise en place de la réplication en cours...', false);
       result.textContent = '';
-      const out = await post(dry ? '/api/replication/preview' : '/api/replication/run', {bucket, tenant: name});
+      const out = await post(dry ? '/api/replication/preview' : '/api/replication/run', {bucket, tenant: name, noncurrent_days: days});
       simulate.disabled = false;
       showLog(out.log);
       setStatus(out.error || out.message, !!out.error || !out.ok);
@@ -632,9 +667,9 @@ PAGE = r"""<!doctype html>
         const states = STEP_STATE[dry ? 'preview' : 'run'];
         result.append(table(['Étape', 'État', 'Détail'], out.steps.map(st => [st.name, {text: states[st.status] || st.status, cls: st.status === 'CHANGED' ? 'ok' : undefined}, st.detail])));
       }
-      if (dry && out.ok) { simulatedFor = name; run.disabled = false; }
-      else if (!dry && out.ok) { simulatedFor = null; }
-      else { run.disabled = simulatedFor !== name; }
+      if (dry && out.ok) { simulatedFor = key(); run.disabled = false; }
+      else if (!dry && out.ok) { simulatedFor = null; refreshStatus(false); }
+      else { run.disabled = simulatedFor !== key(); }
     }
     simulate.addEventListener('click', () => call(true));
     run.addEventListener('click', () => call(false));
@@ -1541,7 +1576,9 @@ def _run_write(thunk, ok_message, ok_statuses=CREATED):
 
 
 def _text(body, key):
-    return str(body.get(key, '')).strip()
+    """A body field as stripped text; a missing field or a JSON null is empty (not the string "None")."""
+    value = body.get(key)
+    return '' if value is None else str(value).strip()
 
 
 def _valid_account(body):
@@ -1974,12 +2011,14 @@ class _LogLines(logging.Handler):
         self.lines.append(f'{record.levelname:7s} {record.getMessage()}')
 
 
-def run_replication(config, bucket, tenant, dry_run):
+def run_replication(config, bucket, tenant, dry_run, noncurrent_days=None):
     """Set up (or, with dry_run, preview) the replication of a bucket to PAG with cos2pag's sync_bucket.
 
     cos2pag does the whole job (COS ACL / firewall / notifications, PAG partition and repository, PDR task) and is
-    idempotent; it keeps its own config file and secrets, referenced from config.json. Returns
-    {ok, dry_run, message, steps: [{name, status, detail}], log}.
+    idempotent; it keeps its own config file and secrets, referenced from config.json. `noncurrent_days` overrides
+    the retention of noncurrent object versions (cos2pag's --noncurrent-expiration-days) for this run; applied to
+    an existing replication it updates the lifecycle rule on PAG. Returns {ok, dry_run, message, steps: [{name,
+    status, detail}], log}.
     """
     result = {'ok': False, 'dry_run': dry_run, 'message': '', 'steps': [], 'log': ''}
     settings = replication_settings(config)
@@ -2001,7 +2040,8 @@ def run_replication(config, bucket, tenant, dry_run):
             try:
                 if settings['env_file']:
                     load_dotenv(settings['env_file'], override=True)
-                report = mods.sync_bucket(mods.load_config(settings['config']), bucket, tenant, dry_run=dry_run)
+                extra = {} if noncurrent_days is None else {'noncurrent_expiration_days': noncurrent_days}
+                report = mods.sync_bucket(mods.load_config(settings['config']), bucket, tenant, dry_run=dry_run, **extra)
             except FileNotFoundError as err:
                 result['message'] = f"Fichier introuvable : {err.filename or err}"
             except mods.ConfigError as err:
@@ -2027,6 +2067,91 @@ def run_replication(config, bucket, tenant, dry_run):
     return result
 
 
+def _cos2pag_clients():
+    """The cos2pag client pieces needed to read a replication's state, or None if not installed."""
+    try:
+        from cos2pag.config import AuthConfig
+        from cos2pag.http_client import build_session
+        from cos2pag.pdr_client import PdrClient
+        from cos2pag.s3_lifecycle_client import build_s3_client, get_bucket_lifecycle
+    except ImportError:
+        return None
+    return types.SimpleNamespace(AuthConfig=AuthConfig, build_session=build_session, PdrClient=PdrClient,
+                                 build_s3_client=build_s3_client, get_bucket_lifecycle=get_bucket_lifecycle)
+
+
+DAY_BITS = [('sunday', 1), ('monday', 2), ('tuesday', 4), ('wednesday', 8), ('thursday', 16), ('friday', 32), ('saturday', 64)]
+
+
+def noncurrent_days_from_rules(rules):
+    """Retention of noncurrent versions (days) from a bucket's S3 lifecycle rules, or None."""
+    found = None
+    for rule in rules or []:
+        days = (rule.get('NoncurrentVersionExpiration') or {}).get('NoncurrentDays')
+        if isinstance(days, int) and not isinstance(days, bool):
+            if rule.get('ID') == 'expire-noncurrent-versions':
+                return days
+            found = days if found is None else found
+    return found
+
+
+def replication_status(config, bucket):
+    """What exists today for a bucket's replication: the PDR task (alias = bucket name) and the PAG lifecycle rules.
+
+    Read-only: a GET on PDR's task list and a GET of the bucket's lifecycle on PAG's S3 endpoint.
+    Returns {ok, message, pdr: {found, id, schedule}, lifecycle: {noncurrent_days, rules}, log}.
+    """
+    result = {'ok': False, 'message': '', 'pdr': None, 'lifecycle': None, 'log': ''}
+    settings = replication_settings(config)
+    if settings is None:
+        result['message'] = 'Réplication non configurée.'
+        return result
+    mods, clients = _cos2pag(), _cos2pag_clients()
+    if mods is None or clients is None:
+        result['message'] = "Le paquet cos2pag n'est pas installé."
+        return result
+    with _api_lock:
+        try:
+            if settings['env_file']:
+                load_dotenv(settings['env_file'], override=True)
+            cfg = mods.load_config(settings['config'])
+            pdr_cfg = cfg['pdr']
+            session = clients.build_session(clients.AuthConfig.from_dict(pdr_cfg.get('auth', {})), verify_ssl=pdr_cfg.get('verify_ssl', True))
+            task = clients.PdrClient(pdr_cfg['base_url'], session, timeout=pdr_cfg.get('timeout', 30)).find_task_by_alias(bucket)
+            schedule = (task or {}).get('schedule') or {}
+            mask = schedule.get('dowMask') if isinstance(schedule.get('dowMask'), int) else 0
+            result['pdr'] = {
+                'found': task is not None, 'id': (task or {}).get('id'),
+                'schedule': {'enabled': bool(schedule.get('enabled')), 'hour': schedule.get('hour'),
+                             'days': [name for name, bit in DAY_BITS if mask & bit]} if schedule else None,
+            }
+            try:
+                rules = clients.get_bucket_lifecycle(clients.build_s3_client(pdr_cfg['target_s3']), bucket)
+            except Exception:  # no repository on PAG yet (or PAG's S3 not reachable): nothing to read
+                rules = None
+            result['lifecycle'] = {'noncurrent_days': noncurrent_days_from_rules(rules), 'rules': [r.get('ID') for r in rules or []],
+                                   'readable': rules is not None}
+            result['ok'] = True
+        except FileNotFoundError as err:
+            result['message'] = f"Fichier introuvable : {err.filename or err}"
+        except mods.ConfigError as err:
+            result['message'] = f'Configuration de cos2pag : {err}'
+        except mods.ApiError as err:
+            result['message'] = f'Erreur de l\'API : {err}'
+        except KeyError as err:
+            result['message'] = f'Configuration de cos2pag : clé manquante {err}'
+        except Exception as err:
+            result['message'] = f'{type(err).__name__} : {err}'
+    return result
+
+
+def handle_replication_status(config, body):
+    bucket = _existing_bucket(body)
+    if not bucket:
+        return 400, {'error': 'Nom de bucket invalide.'}
+    return 200, replication_status(config, bucket)
+
+
 def handle_replication(config, body, dry_run):
     bucket = _existing_bucket(body)
     if not bucket:
@@ -2034,10 +2159,19 @@ def handle_replication(config, body, dry_run):
     tenant = _text(body, 'tenant')
     if not LABEL_RE.match(tenant):
         return 400, {'error': 'Tenant PAG invalide (lettres, chiffres, . - et _ uniquement).'}
-    return 200, run_replication(config, bucket, tenant, dry_run)
+    days = None
+    if _text(body, 'noncurrent_days'):
+        try:
+            days = int(_text(body, 'noncurrent_days'))
+        except ValueError:
+            days = 0
+        if not 1 <= days <= MAX_RETENTION_DAYS:
+            return 400, {'error': f'Rétention invalide (nombre entier de jours, entre 1 et {MAX_RETENTION_DAYS}).'}
+    return 200, run_replication(config, bucket, tenant, dry_run, days)
 
 
 POST_ROUTES = {
+    '/api/replication/status': handle_replication_status,
     '/api/replication/preview': lambda config, body: handle_replication(config, body, dry_run=True),
     '/api/replication/run': lambda config, body: handle_replication(config, body, dry_run=False),
     '/api/bucket/create': handle_create_bucket,
