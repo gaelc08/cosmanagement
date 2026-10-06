@@ -7,13 +7,12 @@ Usage:
     python cos_ui.py --port 9000 --no-browser
 
 Tabs:
-  Recherche          list the buckets of every account starting with sa-<tenant>-;
-                     view, edit or delete a bucket; fetch or generate an
-                     account's credentials
-  Créer              create one storage account, or one bucket, from typed-in values
-  Création en masse  create many accounts / buckets from a JSON file that you load
-                     or paste in the page (format below), with a preview and a
-                     per-item result
+  Rechercher  by tenant, storage account or bucket, with a full name or a pattern using * (fina*, *-0001, *docs*).
+              Every bucket shows its object count and its usage against its quota right in the results.
+  Modifier    the bucket selected in the results: quota, allowed IPs, replication to PAG, deletion, and its
+              account's credentials
+  Créer       one storage account or bucket from typed-in values, or many from a JSON file that you load or
+              paste in the page (format below), with a preview and a per-item result
 
 Bulk file format (every key is optional, `defaults` fill what a bucket omits):
     {
@@ -36,7 +35,6 @@ never called by more than one request at once.
 
 import argparse
 import contextlib
-import datetime
 import io
 import ipaddress
 import json
@@ -55,7 +53,6 @@ from dotenv import load_dotenv
 import hive_management as hm
 import pag_teardown
 
-TENANT_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$')
 ACCOUNT_RE = re.compile(r'^sa-[A-Za-z0-9][A-Za-z0-9_-]{0,127}$')
 BUCKET_RE = re.compile(r'^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$')          # names we create
 BUCKET_NAME_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$')     # names that already exist
@@ -64,7 +61,8 @@ CV_PREFIX = 'cv-'                                                      # contain
 LABEL_SUFFIX_RE = re.compile(r'^[-_.A-Za-z0-9]{1,20}$')
 VAULT_TENANT_RE = re.compile(r'^cv-(.+?)(?:-\d+)?$')
 ACCOUNT_TENANT_RE = re.compile(r'^sa-(.+)-\d+$')
-FIND_RE = re.compile(r'^[A-Za-z0-9._-]{1,255}$')                       # a bucket name, or part of one
+PATTERN_RE = re.compile(r'^[A-Za-z0-9._*-]{1,255}$')                   # a name, or a pattern where * is a wildcard
+SEARCH_KINDS = ('tenant', 'account', 'bucket')
 MAX_QUOTA_GB = 1_000_000
 MAX_RETENTION_DAYS = 36500
 MAX_BODY = 1024 * 1024
@@ -109,20 +107,20 @@ PAGE = r"""<!doctype html>
   #tabs button.active { color:var(--fg); border-bottom-color:var(--accent); font-weight:600; }
 
   #search, #find, .inline-form { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
-  #report h2 { font-size:17px; margin:18px 0 2px; }
-  #report .meta { color:var(--muted); font-size:13px; }
-  #report td.num, #report th.num { text-align:right; white-space:nowrap; }
-  #report tr.account td { background:var(--card); font-weight:600; }
-  #report tr.total td { font-weight:700; border-top:2px solid var(--line); }
-  #report td.warn { color:#9a6700; font-weight:600; } #report td.crit { color:var(--err); font-weight:700; }
   @media print {
-    #tabs, #status, #creds, #bucket-panel, #tab-search, #tab-create, #tab-bulk, #tenants-panel, #logbox, #report-form { display:none !important; }
+    #tabs, #status, #creds, #bucket-panel, #tenants-panel, #logbox, #search, .toolbar, #tab-modify, #tab-create { display:none !important; }
     body { background:#fff; color:#000; } main { max-width:none; padding:0; }
-    #tab-report { display:block !important; }
   }
-  #find { margin-top:10px; }
-  #search input, #find input { min-width:200px; }
-  #find-help { margin:4px 0 0; }
+  #search input[type=text] { min-width:260px; flex:1; }
+  #search-help { margin:6px 0 0; }
+  .bar { height:6px; width:120px; background:var(--line); border-radius:3px; overflow:hidden; display:inline-block; vertical-align:middle; }
+  .bar > i { display:block; height:100%; background:var(--accent); }
+  .bar.warn > i { background:#9a6700; } .bar.crit > i { background:var(--err); }
+  td.num, th.num { text-align:right; white-space:nowrap; }
+  td.warn { color:#9a6700; font-weight:600; } td.crit { color:var(--err); font-weight:700; }
+  .usage { font-size:15px; margin:4px 0 10px; }
+  .usage .bar { width:240px; height:10px; margin-left:8px; }
+  #tab-modify h2 { font:600 16px ui-monospace, monospace; margin:0 0 2px; }
   .grid-form .tenant-hint { font-size:12px; }
   .grid-form .tenant-hint.ok { color:var(--ok); }
   .grid-form .tenant-hint.bad { color:var(--err); }
@@ -169,6 +167,7 @@ PAGE = r"""<!doctype html>
   #creds .row .k { width:110px; color:var(--muted); }
   #creds .row .v { font-family:ui-monospace, monospace; word-break:break-all; }
 
+  #tab-bulk { margin-top:24px; color:var(--fg); font-size:15px; } #tab-bulk summary { font-weight:600; cursor:pointer; }
   details { margin-top:16px; color:var(--muted); font-size:13px; }
   pre { white-space:pre-wrap; background:var(--card); border:1px solid var(--line); border-radius:6px; padding:8px; }
 </style>
@@ -177,40 +176,47 @@ PAGE = r"""<!doctype html>
 <main>
   <h1>COS management</h1>
   <nav id="tabs">
-    <button type="button" class="active" data-tab="search">Recherche</button>
+    <button type="button" class="active" data-tab="search">Rechercher</button>
+    <button type="button" data-tab="modify">Modifier</button>
     <button type="button" data-tab="create">Créer</button>
-    <button type="button" data-tab="bulk">Création en masse</button>
-    <button type="button" data-tab="report">Rapport</button>
   </nav>
   <div id="status"></div>
   <div id="creds" class="panel" hidden></div>
-  <div id="bucket-panel" class="panel" hidden></div>
 
   <section id="tab-search">
     <form id="search">
-      <span class="prefix">sa-</span>
-      <input type="text" id="tenant" placeholder="tenant" autocomplete="off" autofocus required list="tenants-datalist"
-             pattern="[A-Za-z0-9][A-Za-z0-9_\-]*" maxlength="64">
-      <span class="prefix">-</span>
+      <select id="kind" aria-label="Rechercher par">
+        <option value="tenant">Tenant</option>
+        <option value="account">Storage account</option>
+        <option value="bucket">Bucket</option>
+      </select>
+      <input type="text" id="query" placeholder="nom complet ou avec *" autocomplete="off" autofocus required
+             maxlength="255" pattern="[A-Za-z0-9._*\-]+" list="tenants-datalist">
       <button type="submit" id="go">Rechercher</button>
       <button type="button" class="secondary" id="tenants-go">Lister les tenants</button>
     </form>
     <datalist id="tenants-datalist"></datalist>
+    <p class="empty" id="search-help"></p>
     <div id="tenants-panel" class="panel" hidden></div>
-    <form id="find">
-      <span class="prefix">bucket</span>
-      <input type="text" id="bname" placeholder="nom du bucket" autocomplete="off" maxlength="255"
-             pattern="[A-Za-z0-9._\-]+">
-      <button type="submit" id="find-go">Trouver</button>
-      <button type="button" class="secondary" id="scan-go">Parcourir tous les comptes</button>
-    </form>
-    <p class="empty" id="find-help">« Trouver » interroge le bucket par son nom exact (un seul appel) et en déduit son compte.
-    « Parcourir » cherche dans tous les comptes, avec un nom partiel si besoin : un appel API par compte, ça peut être long.</p>
     <div class="toolbar" id="toolbar">
-      <input type="text" id="filter" placeholder="Filtrer les buckets..." autocomplete="off">
+      <input type="text" id="filter" placeholder="Filtrer les résultats..." autocomplete="off">
       <button type="button" class="secondary" id="copy">Copier les buckets affichés</button>
+      <button type="button" class="secondary" id="csv">Exporter en CSV</button>
+      <button type="button" class="secondary" id="print">Imprimer</button>
     </div>
+    <div id="bucket-panel" class="panel" hidden></div>
     <div id="results"></div>
+  </section>
+
+  <section id="tab-modify" hidden>
+    <p class="empty" id="m-empty">Aucun bucket sélectionné : cherche-le dans « Rechercher », puis clique sur « Modifier ».</p>
+    <div id="m-main" hidden>
+      <h2 id="m-title"></h2>
+      <div id="m-summary"></div>
+      <div class="row-buttons" id="m-actions"></div>
+      <div id="m-edit" class="panel"></div>
+      <div id="m-repl" class="panel" hidden></div>
+    </div>
   </section>
 
   <section id="tab-create" hidden>
@@ -244,9 +250,8 @@ PAGE = r"""<!doctype html>
       <input type="text" id="c-meta" placeholder="facultatif">
       <div class="buttons"><button type="submit" id="c-go">Créer le bucket</button></div>
     </form>
-  </section>
 
-  <section id="tab-bulk" hidden>
+    <details id="tab-bulk"><summary>Création en masse (fichier JSON)</summary>
     <p class="empty">Crée plusieurs comptes et buckets d'après un fichier de configuration JSON. Charge un fichier, colle son contenu, ou
     pars de l'exemple, puis prévisualise avant d'exécuter. Format : <code>defaults</code> (valeurs par défaut des buckets),
     <code>accounts</code> (comptes à créer) et <code>buckets</code> (buckets à créer).</p>
@@ -269,19 +274,7 @@ PAGE = r"""<!doctype html>
     <button type="button" id="b-run" disabled>Exécuter le plan</button>
     <div id="b-plan"></div>
     <div id="b-result"></div>
-  </section>
-
-  <section id="tab-report" hidden>
-    <p class="empty">Rapport d'un tenant : ses buckets, leur quota et leur utilisation. Un appel API par bucket, donc la génération peut prendre un moment.</p>
-    <form id="report-form" class="inline-form">
-      <span class="prefix">tenant</span>
-      <input type="text" id="r-tenant" placeholder="tenant" autocomplete="off" required list="tenants-datalist"
-             pattern="[A-Za-z0-9][A-Za-z0-9_\-]*" maxlength="64">
-      <button type="submit" id="r-go">Générer le rapport</button>
-      <button type="button" class="secondary" id="r-csv" hidden>Exporter en CSV</button>
-      <button type="button" class="secondary" id="r-print" hidden>Imprimer</button>
-    </form>
-    <div id="report"></div>
+    </details>
   </section>
 
   <details id="logbox" hidden><summary>Détails de l'appel API</summary><pre id="log"></pre></details>
@@ -289,7 +282,7 @@ PAGE = r"""<!doctype html>
 <script>
   const $ = id => document.getElementById(id);
   let data = {};
-  let lastSearch = null;   // {kind: 'tenant' | 'bucket' | 'scan', value}
+  let lastSearch = null;   // {kind: 'tenant' | 'account' | 'bucket', value}
   let info = {};           // account -> bucket -> the listing's entry (quota, usage, location, settings...)
   let tenantLocations = {};   // tenant -> storage locations, from config.json
   let allLocations = [];
@@ -361,10 +354,11 @@ PAGE = r"""<!doctype html>
   }
 
   // ---- tabs ---------------------------------------------------------------
-  document.querySelectorAll('#tabs button').forEach(b => b.addEventListener('click', () => {
-    document.querySelectorAll('#tabs button').forEach(x => x.classList.toggle('active', x === b));
-    for (const name of ['search', 'create', 'bulk', 'report']) $('tab-' + name).hidden = name !== b.dataset.tab;
-  }));
+  function showTab(name) {
+    document.querySelectorAll('#tabs button').forEach(x => x.classList.toggle('active', x.dataset.tab === name));
+    for (const t of ['search', 'modify', 'create']) $('tab-' + t).hidden = t !== name;
+  }
+  document.querySelectorAll('#tabs button').forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
 
   // ---- credentials panel ----------------------------------------------------
   function copyText(text, label) {
@@ -474,13 +468,31 @@ PAGE = r"""<!doctype html>
     ['is_legacy', 'Legacy', yesNo],
   ];
 
-  function closeBucketPanel() { $('bucket-panel').textContent = ''; $('bucket-panel').hidden = true; }
+  function closePanel(box) { box.textContent = ''; box.hidden = true; }
 
-  function panelHeader(title) {
-    const box = $('bucket-panel');
+  function panelHeader(title, box) {
     box.textContent = '';
-    box.append(el('strong', title));
+    if (title) box.append(el('strong', title));
     box.hidden = false;
+    return box;
+  }
+
+  // ---- usage: objects and size against the quota, from the bucket listing's entry ------------------------
+  const num = v => v === undefined || v === null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v);
+  function bar(p) {
+    const b = el('span', undefined, 'bar' + (p !== null && p >= 100 ? ' crit' : p !== null && p >= 80 ? ' warn' : ''));
+    const i = el('i');
+    i.style.width = Math.max(0, Math.min(100, p === null ? 0 : p)) + '%';
+    b.append(i);
+    return b;
+  }
+  function usageSummary(entry) {
+    const box = el('div', undefined, 'usage');
+    if (!entry) { box.append(el('span', 'Objets et utilisation indisponibles (bucket absent du listage).', 'empty')); return box; }
+    const objects = num(entry.object_count), used = num(entry.bytes_used), quota = num(entry.hard_quota);
+    const p = pct(used, quota);
+    box.append(el('strong', objects === null ? 'n/d' : objects.toLocaleString('fr-FR')), ' objet(s) \u00b7 ',
+               el('strong', fmtBytes(used)), ' utilisés sur ', el('strong', fmtBytes(quota)), ' de quota (' + fmtPct(p) + ')', bar(p));
     return box;
   }
 
@@ -490,11 +502,12 @@ PAGE = r"""<!doctype html>
     showLog(out.log);
     const ok = !out.error && out.ok;
     setStatus(ok ? '' : (out.error || out.message), !ok);
-    const box = panelHeader((mode === 'edit' ? 'Modifier le bucket ' : 'Bucket ') + bucket + ' (' + account + ')');
+    const box = panelHeader(mode === 'edit' ? 'Modifier le quota et les IP autorisées' : 'Bucket ' + bucket + ' (' + account + ')', $(mode === 'edit' ? 'm-edit' : 'bucket-panel'));
 
     if (mode === 'view') {
       const entry = (info[account] || {})[bucket];
       const details = ok ? out.details : null;
+      box.append(usageSummary(entry));
       if (!ok) box.append(el('div', 'Détails du bucket (GET) indisponibles : ' + (out.error || out.message) + '.', 'empty'));
       if (entry) {
         const pick = key => entry[key] !== undefined ? entry[key] : findKey(details, key);
@@ -528,7 +541,7 @@ PAGE = r"""<!doctype html>
         box.append(raw);
       }
       const close = el('button', 'Fermer', 'small secondary');
-      close.addEventListener('click', closeBucketPanel);
+      close.addEventListener('click', () => closePanel(box));
       box.append(close);
       return;
     }
@@ -543,7 +556,7 @@ PAGE = r"""<!doctype html>
       const unread = [];
       if (quota === undefined) unread.push('le quota');
       if (ips === undefined) unread.push('les IP autorisées');
-      if (unread.length) box.append(el('div', 'Non lu dans la réponse de l\'API : ' + unread.join(' et ') + '. Ouvre « Voir » pour les retrouver dans la réponse brute.', 'empty'));
+      if (unread.length) box.append(el('div', 'Non lu dans la réponse de l\'API : ' + unread.join(' et ') + '. Ouvre « Voir » dans « Rechercher » pour les retrouver dans la réponse brute.', 'empty'));
     }
 
     const form = el('form', undefined, 'grid-form');
@@ -556,9 +569,7 @@ PAGE = r"""<!doctype html>
     const initial = {quota: fQuota.value.trim(), ips: ipList(fIps.value)};
     const buttons = el('div', undefined, 'buttons');
     const save = el('button', 'Enregistrer'); save.type = 'submit';
-    const cancel = el('button', 'Annuler', 'secondary'); cancel.type = 'button';
-    cancel.addEventListener('click', closeBucketPanel);
-    buttons.append(save, cancel);
+    buttons.append(save);
     form.append(buttons);
     form.addEventListener('submit', async e => {
       e.preventDefault();
@@ -582,7 +593,12 @@ PAGE = r"""<!doctype html>
       if (res.log) showLog(res.log);
       const done = !res.error && res.ok;
       setStatus(res.error || res.message, !done);
-      if (done) closeBucketPanel();
+      if (done) {
+        await refreshSearch();
+        renderSelected();
+        await openBucket(account, bucket, 'edit');
+        setStatus(res.message, false);
+      }
     });
     box.append(form);
   }
@@ -600,10 +616,11 @@ PAGE = r"""<!doctype html>
   const DAY_NAMES = {sunday: 'dimanche', monday: 'lundi', tuesday: 'mardi', wednesday: 'mercredi', thursday: 'jeudi', friday: 'vendredi', saturday: 'samedi'};
 
   function openReplication(account, bucket) {
-    const box = panelHeader('Répliquer vers PAG : ' + bucket + ' (' + account + ')');
+    const box = panelHeader('Répliquer vers PAG : ' + bucket + ' (' + account + ')', $('m-repl'));
     const close = el('button', 'Fermer', 'small secondary');
     close.type = 'button';
-    close.addEventListener('click', closeBucketPanel);
+    close.addEventListener('click', () => closePanel(box));
+    box.scrollIntoView({block: 'nearest'});
     if (!replicationConfigured) {
       box.append(el('p', 'La réplication vers PAG n\'est pas configurée. Installe cos2pag dans le même environnement Python (pip install <dossier de cos2pag>) ' +
         'et ajoute à config.json : "cos2pag": {"config": "<chemin du config.yaml de cos2pag>", "env_file": "<chemin de son .env>"}.', 'empty'), close);
@@ -809,15 +826,25 @@ PAGE = r"""<!doctype html>
     const ok = !out.error && out.ok;
     setStatus(out.error || out.message, !ok);
     if (ok) {
-      closeBucketPanel();
-      if (lastSearch && lastSearch.kind === 'tenant') { await runSearch(lastSearch.value, true); return; }
       for (const list of Object.values(data)) { const i = list.indexOf(bucket); if (i >= 0) list.splice(i, 1); }
-      for (const acct of Object.keys(data)) if (!data[acct].length) delete data[acct];
+      if (info[account]) delete info[account][bucket];
+      if (lastSearch && lastSearch.kind === 'bucket') for (const acct of Object.keys(data)) if (!data[acct].length) delete data[acct];
+      selected = null;
+      renderSelected();
+      showTab('search');
       render();
     }
   }
 
   // ---- search ---------------------------------------------------------------
+  let selected = null;   // {account, bucket}: the bucket the "Modifier" tab works on
+
+  function cell(content, cls) {
+    const td = el('td', typeof content === 'string' ? content : undefined, cls);
+    if (typeof content !== 'string') td.append(content);
+    return td;
+  }
+
   function render() {
     const q = $('filter').value.trim().toLowerCase();
     const box = $('results');
@@ -830,18 +857,29 @@ PAGE = r"""<!doctype html>
       h.append(el('span', list.length + (q ? ' / ' + buckets.length : '') + ' bucket(s)'));
       card.append(h);
       if (list.length) {
-        const ul = el('ul');
+        const t = el('table');
+        const head = el('tr');
+        for (const [title, cls] of [['Bucket', ''], ['Objets', 'num'], ['Utilisé', 'num'], ['Quota', 'num'], ['% du quota', 'num'], ['', '']]) head.append(el('th', title, cls));
+        t.append(head);
         for (const b of list) {
-          const li = el('li');
-          li.append(b);
-          for (const [act, label, cls] of [['view', 'Voir', 'secondary'], ['edit', 'Modifier', 'secondary'], ['replicate', 'Répliquer vers PAG', 'secondary'], ['delete', 'Supprimer', 'danger']]) {
+          const e = (info[account] || {})[b];
+          const used = e ? num(e.bytes_used) : null, quota = e ? num(e.hard_quota) : null, objects = e ? num(e.object_count) : null;
+          const p = pct(used, quota);
+          const tr = el('tr');
+          const pctCell = el('td', undefined, pctClass(p));
+          pctCell.append(fmtPct(p) + ' ', bar(p));
+          const actions = el('td');
+          actions.style.whiteSpace = 'nowrap';
+          for (const [act, label, cls] of [['view', 'Voir', 'secondary'], ['edit', 'Modifier', '']]) {
             const btn = el('button', label, 'small ' + cls);
             btn.dataset.act = act; btn.dataset.bucket = b; btn.dataset.account = account;
-            li.append(btn);
+            actions.append(btn, ' ');
           }
-          ul.append(li);
+          tr.append(cell(b, 'mono'), cell(objects === null ? 'n/d' : objects.toLocaleString('fr-FR'), 'num'), cell(fmtBytes(used), 'num'),
+                    cell(fmtBytes(quota), 'num'), pctCell, actions);
+          t.append(tr);
         }
-        card.append(ul);
+        card.append(t);
       } else {
         card.append(el('div', 'Aucun bucket', 'empty'));
       }
@@ -859,28 +897,55 @@ PAGE = r"""<!doctype html>
 
   $('filter').addEventListener('input', render);
 
-  $('results').addEventListener('click', async e => {
-    const act = e.target.closest('button[data-act]');
-    if (act) {
-      const {account, bucket} = act.dataset;
-      if (act.dataset.act === 'delete') await deleteBucket(account, bucket);
-      else if (act.dataset.act === 'replicate') openReplication(account, bucket);
-      else await openBucket(account, bucket, act.dataset.act);
-      return;
-    }
-    const b = e.target.closest('button[data-cred]');
-    if (!b) return;
-    const account = b.dataset.account, mode = b.dataset.cred;
+  async function credentials(account, mode, btn) {
     if (mode === 'create' && !confirm('Générer une nouvelle paire de credentials pour ' + account + ' ?')) return;
-    b.disabled = true;
+    btn.disabled = true;
     setStatus(mode === 'get' ? 'Récupération des credentials...' : 'Génération des credentials...', false);
     const out = await post('/api/creds/' + mode, {account});
-    b.disabled = false;
+    btn.disabled = false;
     showLog(out.log);
     if (out.error || !out.ok) { setStatus(out.error || out.message, true); return; }
     setStatus(out.message, false);
     showCreds(out.credentials);
+  }
+
+  $('results').addEventListener('click', async e => {
+    const act = e.target.closest('button[data-act]');
+    if (act) {
+      const {account, bucket} = act.dataset;
+      if (act.dataset.act === 'edit') selectBucket(account, bucket);
+      else await openBucket(account, bucket, 'view');
+      return;
+    }
+    const b = e.target.closest('button[data-cred]');
+    if (b) await credentials(b.dataset.account, b.dataset.cred, b);
   });
+
+  // ---- the "Modifier" tab: works on the bucket picked in the results ----------------------------------------
+  function renderSelected() {
+    $('m-empty').hidden = !!selected;
+    $('m-main').hidden = !selected;
+    if (!selected) return;
+    const {account, bucket} = selected;
+    $('m-title').textContent = bucket + ' (' + account + ')';
+    $('m-summary').textContent = '';
+    $('m-summary').append(usageSummary((info[account] || {})[bucket]));
+  }
+
+  function selectBucket(account, bucket) {
+    selected = {account, bucket};
+    renderSelected();
+    const actions = $('m-actions');
+    actions.textContent = '';
+    const add = (label, cls, handler) => { const b = el('button', label, 'small ' + cls); b.type = 'button'; b.addEventListener('click', () => handler(b)); actions.append(b); };
+    add('Répliquer vers PAG', 'secondary', () => openReplication(account, bucket));
+    add('Récupérer les credentials du compte', 'secondary', b => credentials(account, 'get', b));
+    add('Générer de nouvelles credentials', 'secondary', b => credentials(account, 'create', b));
+    add('Supprimer le bucket', 'danger', () => deleteBucket(account, bucket));
+    closePanel($('m-repl'));
+    showTab('modify');
+    return openBucket(account, bucket, 'edit');
+  }
 
   $('copy').addEventListener('click', () => {
     const q = $('filter').value.trim().toLowerCase();
@@ -888,21 +953,64 @@ PAGE = r"""<!doctype html>
     copyText(names.join('\n'), names.length + ' bucket(s)');
   });
 
+  function resultsCsv() {
+    const q = $('filter').value.trim().toLowerCase();
+    const quote = v => '"' + String(v === null || v === undefined ? '' : v).replace(/"/g, '""') + '"';
+    const iso = ms => { const d = new Date(Number(ms)); return ms && Number.isFinite(d.getTime()) ? d.toISOString() : ''; };
+    const lines = [['tenant', 'compte', 'bucket', 'storage_location', 'quota_octets', 'utilisation_octets', 'utilisation_pct', 'objets', 'cree_le']];
+    for (const [account, buckets] of Object.entries(data)) for (const b of buckets) {
+      if (!b.toLowerCase().includes(q)) continue;
+      const e = (info[account] || {})[b] || {};
+      const used = num(e.bytes_used), quota = num(e.hard_quota), p = pct(used, quota);
+      lines.push([tenantOf(account), account, b, e.storage_location, quota, used, p === null ? '' : Math.round(p * 10) / 10, num(e.object_count), iso(e.creation_time)]);
+    }
+    return '﻿' + lines.map(l => l.map(quote).join(';')).join('\r\n') + '\r\n';
+  }
+
+  $('csv').addEventListener('click', () => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([resultsCsv()], {type: 'text/csv;charset=utf-8'}));
+    a.download = 'buckets-' + new Date().toISOString().slice(0, 10) + '.csv';
+    document.body.append(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+  });
+  $('print').addEventListener('click', () => window.print());
+
   function fillAccounts() {
     const list = $('accounts-list');
     list.textContent = '';
     for (const account of Object.keys(data)) { const o = el('option'); o.value = account; list.append(o); }
   }
 
-  async function runSearch(tenant, keepMessage) {
+  const KIND_HELP = {
+    tenant: ['fina ou fi*', 'Nom complet du tenant (fina) ou motif avec * (fi*, *ina*). Un appel API par compte trouvé.'],
+    account: ['sa-fina-0001 ou sa-fina-*', 'Nom complet du storage account (sa-fina-0001) ou motif avec * (sa-fina-*, *-0001). Le préfixe sa- peut être omis.'],
+    bucket: ['fina-docs ou *docs*', 'Nom complet du bucket : un seul appel. Avec * (*docs*, fina-*) : tous les comptes sont parcourus, un appel API par compte, ça peut être long.'],
+  };
+  function syncKind() {
+    const [placeholder, help] = KIND_HELP[$('kind').value];
+    $('query').placeholder = placeholder;
+    $('search-help').textContent = help;
+    if ($('kind').value === 'tenant') $('query').setAttribute('list', 'tenants-datalist'); else $('query').removeAttribute('list');
+  }
+  $('kind').addEventListener('change', syncKind);
+  syncKind();
+
+  async function runSearch(kind, value, keepMessage) {
     const go = $('go');
-    lastSearch = {kind: 'tenant', value: tenant};
+    lastSearch = {kind, value};
     go.disabled = true;
-    if (!keepMessage) setStatus('Recherche en cours (un appel API par compte, ça peut prendre un moment)...', false);
+    if (!keepMessage) {
+      const many = kind === 'bucket' && value.includes('*');
+      setStatus(many ? 'Parcours de tous les comptes (un appel API par compte, ça peut être long)...' : 'Recherche en cours (un appel API par compte, ça peut prendre un moment)...', false);
+    }
     $('results').textContent = '';
+    closePanel($('bucket-panel'));
     $('toolbar').style.display = 'none';
     try {
-      const res = await fetch('/api/search?tenant=' + encodeURIComponent(tenant));
+      const res = await fetch('/api/search?kind=' + kind + '&q=' + encodeURIComponent(value));
       const out = await res.json();
       showLog(out.log);
       if (!res.ok || out.error) { setStatus(out.error || ('Erreur HTTP ' + res.status), true); return; }
@@ -911,16 +1019,26 @@ PAGE = r"""<!doctype html>
       const n = Object.keys(data).length;
       const total = Object.values(data).reduce((s, b) => s + b.length, 0);
       if (!keepMessage || out.has_error) {
-        setStatus(n
-          ? n + ' compte(s) "' + out.prefix + '*", ' + total + ' bucket(s).' + (out.has_error ? ' Des erreurs ont eu lieu, voir les détails.' : '')
-          : 'Aucun compte "' + out.prefix + '*" trouvé.' + (out.has_error ? ' Voir les détails ci-dessous.' : ''),
-          out.has_error);
+        let msg;
+        if (out.message) msg = out.message;
+        else if (kind === 'bucket') {
+          if (total) msg = total + ' bucket(s) trouvé(s) dans ' + n + ' compte(s)' + (out.scanned ? ' (' + out.scanned + ' compte(s) parcouru(s))' : '') + '.';
+          else if (out.found_without_owner) msg = 'Bucket trouvé, mais aucun compte propriétaire dans la réponse de l\'API (voir les détails) : cherche avec un motif, par exemple *' + value + '*.';
+          else if (value.includes('*')) msg = 'Aucun bucket ne correspond à "' + value + '" dans les ' + out.scanned + ' compte(s) parcouru(s).';
+          else msg = 'Aucun bucket nommé "' + value + '"' + (out.status ? ' (HTTP ' + out.status + ')' : '') +
+                     '. Si tu sais qu\'il existe, essaie avec un motif : *' + value + '*.';
+        } else {
+          const what = kind === 'tenant' ? 'tenant' : 'compte';
+          msg = n ? n + ' compte(s) pour le ' + what + ' "' + value + '", ' + total + ' bucket(s).' : 'Aucun ' + what + ' ne correspond à "' + value + '".';
+          if (out.has_error) msg += ' Des erreurs ont eu lieu, voir les détails.';
+        }
+        setStatus(msg, out.has_error);
       }
       $('filter').value = '';
-      $('toolbar').style.display = n ? 'flex' : 'none';
+      $('toolbar').style.display = total || n ? 'flex' : 'none';
       fillAccounts();
-      if (!$('a-id').value.trim() || $('a-id').dataset.prefilled) {
-        $('a-id').value = out.prefix; $('a-id').dataset.prefilled = '1';
+      if (kind === 'tenant' && !value.includes('*') && (!$('a-id').value.trim() || $('a-id').dataset.prefilled)) {
+        $('a-id').value = 'sa-' + value + '-'; $('a-id').dataset.prefilled = '1';
       }
       render();
     } catch (err) {
@@ -930,46 +1048,9 @@ PAGE = r"""<!doctype html>
     }
   }
 
-  $('search').addEventListener('submit', e => { e.preventDefault(); runSearch($('tenant').value.trim(), false); });
+  const refreshSearch = () => lastSearch ? runSearch(lastSearch.kind, lastSearch.value, true) : Promise.resolve();
 
-  async function runFind(name, scan) {
-    if (!name) { setStatus('Saisis un nom de bucket.', true); return; }
-    lastSearch = {kind: scan ? 'scan' : 'bucket', value: name};
-    const buttons = [$('find-go'), $('scan-go')];
-    buttons.forEach(b => { b.disabled = true; });
-    setStatus(scan ? 'Parcours de tous les comptes (un appel API par compte, ça peut être long)...' : 'Recherche du bucket...', false);
-    $('results').textContent = '';
-    $('toolbar').style.display = 'none';
-    try {
-      const res = await fetch('/api/bucket/find?name=' + encodeURIComponent(name) + (scan ? '&scan=1' : ''));
-      const out = await res.json();
-      showLog(out.log);
-      if (!res.ok || out.error) { setStatus(out.error || ('Erreur HTTP ' + res.status), true); return; }
-      data = out.accounts;
-      info = out.info || {};
-      const n = Object.keys(data).length;
-      const total = Object.values(data).reduce((s, b) => s + b.length, 0);
-      let msg;
-      if (out.message) msg = out.message;
-      else if (total) msg = total + ' bucket(s) trouvé(s) dans ' + n + ' compte(s)' + (scan ? ' (' + out.scanned + ' compte(s) parcouru(s))' : '') + '.';
-      else if (out.found_without_owner) msg = 'Bucket trouvé, mais aucun compte propriétaire dans la réponse de l\'API (voir les détails) : utilise « Parcourir tous les comptes ».';
-      else if (scan) msg = 'Aucun bucket contenant "' + name + '" dans les ' + out.scanned + ' compte(s) parcouru(s).';
-      else msg = 'Aucun bucket nommé "' + name + '"' + (out.status ? ' (HTTP ' + out.status + ')' : '') +
-                 '. Si tu sais qu\'il existe, l\'API ne propose peut-être pas cette recherche directe : utilise « Parcourir tous les comptes ».';
-      setStatus(msg, out.has_error);
-      $('filter').value = '';
-      $('toolbar').style.display = total ? 'flex' : 'none';
-      fillAccounts();
-      render();
-    } catch (err) {
-      setStatus('Erreur : ' + err, true);
-    } finally {
-      buttons.forEach(b => { b.disabled = false; });
-    }
-  }
-
-  $('find').addEventListener('submit', e => { e.preventDefault(); runFind($('bname').value.trim(), false); });
-  $('scan-go').addEventListener('click', () => runFind($('bname').value.trim(), true));
+  $('search').addEventListener('submit', e => { e.preventDefault(); runSearch($('kind').value, $('query').value.trim(), false); });
   $('a-id').addEventListener('input', () => { delete $('a-id').dataset.prefilled; });
 
   // The bucket form offers the storage locations of the account's tenant as buttons. A single one is filled in;
@@ -1007,7 +1088,7 @@ PAGE = r"""<!doctype html>
       const items = t.vaults || t.accounts;
       const b = el('button', t.name + ' (' + items.length + ')', 'small secondary');
       b.title = items.join(', ');
-      b.addEventListener('click', () => { $('tenant').value = t.name; runSearch(t.name, false); });
+      b.addEventListener('click', () => { $('kind').value = 'tenant'; syncKind(); $('query').value = t.name; runSearch('tenant', t.name, false); });
       chips.append(b);
     }
     const close = el('button', 'Fermer', 'small secondary');
@@ -1042,9 +1123,7 @@ PAGE = r"""<!doctype html>
 
   // ---- create one account / one bucket ---------------------------------------
   async function afterCreate(account) {
-    if (lastSearch && lastSearch.kind === 'tenant' && account.startsWith('sa-' + lastSearch.value + '-')) {
-      await runSearch(lastSearch.value, true);
-    }
+    if (lastSearch && lastSearch.kind === 'tenant' && account.startsWith('sa-' + lastSearch.value + '-')) await refreshSearch();
   }
 
   $('account-form').addEventListener('submit', async e => {
@@ -1233,9 +1312,7 @@ PAGE = r"""<!doctype html>
     invalidatePlan();
   });
 
-  // ---- report -------------------------------------------------------------------------
-  let reportData = null;
-
+  // ---- formatting ----------------------------------------------------------------------
   function fmtBytes(n) {
     if (n === null || n === undefined) return 'n/d';
     const units = ['o', 'ko', 'Mo', 'Go', 'To', 'Po'];
@@ -1246,100 +1323,6 @@ PAGE = r"""<!doctype html>
   function pct(used, quota) { return quota > 0 && used !== null && used !== undefined ? used / quota * 100 : null; }
   function fmtPct(p) { return p === null ? 'n/d' : (Math.round(p * 10) / 10).toLocaleString('fr-FR') + ' %'; }
   function pctClass(p) { return p === null ? 'num' : p >= 100 ? 'num crit' : p >= 80 ? 'num warn' : 'num'; }
-  function sum(rows, key) {
-    const known = rows.filter(r => r[key] !== null);
-    return known.length ? known.reduce((s, r) => s + r[key], 0) : null;
-  }
-
-  function renderReport(r) {
-    const box = $('report');
-    box.textContent = '';
-    box.append(el('h2', 'Rapport du tenant ' + r.tenant));
-    box.append(el('div', 'Édité le ' + new Date(r.generated_at).toLocaleString('fr-FR'), 'meta'));
-    for (const w of r.warnings) box.append(el('div', w, 'err-list'));
-    if (!r.accounts.length) { box.append(el('p', 'Aucun compte pour ce tenant.', 'empty')); return; }
-
-    const t = el('table');
-    const head = el('tr');
-    for (const [h, cls] of [['Compte / bucket', ''], ['Storage location', ''], ['Quota', 'num'], ['Utilisation', 'num'], ['%', 'num'], ['Objets', 'num']]) head.append(el('th', h, cls));
-    t.append(head);
-    const count = n => n === null ? 'n/d' : n.toLocaleString('fr-FR');
-    const all = [];
-    for (const a of r.accounts) {
-      all.push(...a.buckets);
-      const q = sum(a.buckets, 'quota_bytes'), u = sum(a.buckets, 'used_bytes');
-      const tr = el('tr', undefined, 'account');
-      tr.append(el('td', a.account + ' (' + a.buckets.length + ' bucket(s))'), el('td', ''), el('td', fmtBytes(q), 'num'), el('td', fmtBytes(u), 'num'),
-                el('td', fmtPct(pct(u, q)), 'num'), el('td', count(sum(a.buckets, 'objects')), 'num'));
-      t.append(tr);
-      for (const b of a.buckets) {
-        const p = pct(b.used_bytes, b.quota_bytes);
-        const row = el('tr');
-        row.append(el('td', '\u00a0\u00a0' + b.name, 'mono'), el('td', b.storage_location ? labelFor(b.storage_location) : 'n/d'), el('td', fmtBytes(b.quota_bytes), 'num'),
-                   el('td', fmtBytes(b.used_bytes), 'num'), el('td', fmtPct(p), pctClass(p)), el('td', count(b.objects), 'num'));
-        t.append(row);
-      }
-    }
-    const q = sum(all, 'quota_bytes'), u = sum(all, 'used_bytes');
-    const total = el('tr', undefined, 'total');
-    total.append(el('td', 'Total (' + all.length + ' bucket(s))'), el('td', ''), el('td', fmtBytes(q), 'num'), el('td', fmtBytes(u), 'num'),
-                 el('td', fmtPct(pct(u, q)), 'num'), el('td', count(sum(all, 'objects')), 'num'));
-    t.append(total);
-    box.append(t);
-    if (all.some(b => b.quota_bytes === null || b.used_bytes === null)) {
-      box.append(el('div', 'Les valeurs n/d ne sont pas comptées dans les totaux.', 'meta'));
-    }
-  }
-
-  function reportCsv(r) {
-    const quote = v => '"' + String(v === null || v === undefined ? '' : v).replace(/"/g, '""') + '"';
-    const iso = ms => { const d = new Date(Number(ms)); return ms && Number.isFinite(d.getTime()) ? d.toISOString() : ''; };
-    const lines = [['tenant', 'compte', 'bucket', 'storage_location', 'quota_octets', 'utilisation_octets', 'utilisation_pct', 'objets', 'cree_le', 'edite_le']];
-    for (const a of r.accounts) for (const b of a.buckets) {
-      const p = pct(b.used_bytes, b.quota_bytes);
-      lines.push([r.tenant, a.account, b.name, b.storage_location, b.quota_bytes, b.used_bytes, p === null ? '' : Math.round(p * 10) / 10, b.objects, iso(b.created), r.generated_at]);
-    }
-    return '\ufeff' + lines.map(l => l.map(quote).join(';')).join('\r\n') + '\r\n';
-  }
-
-  $('report-form').addEventListener('submit', async e => {
-    e.preventDefault();
-    const tenant = $('r-tenant').value.trim();
-    const go = $('r-go');
-    go.disabled = true;
-    reportData = null;
-    $('r-csv').hidden = true; $('r-print').hidden = true;
-    $('report').textContent = '';
-    setStatus('Génération du rapport (un appel API par bucket, ça peut prendre un moment)...', false);
-    try {
-      const res = await fetch('/api/report?tenant=' + encodeURIComponent(tenant));
-      const out = await res.json();
-      showLog(out.log);
-      if (!res.ok || out.error) { setStatus(out.error || ('Erreur HTTP ' + res.status), true); return; }
-      reportData = out;
-      renderReport(out);
-      const n = out.accounts.reduce((s, a) => s + a.buckets.length, 0);
-      setStatus('Rapport prêt : ' + out.accounts.length + ' compte(s), ' + n + ' bucket(s).', out.has_error || out.warnings.length > 0);
-      $('r-csv').hidden = !n; $('r-print').hidden = !n;
-    } catch (err) {
-      setStatus('Erreur : ' + err, true);
-    } finally {
-      go.disabled = false;
-    }
-  });
-
-  $('r-csv').addEventListener('click', () => {
-    if (!reportData) return;
-    const blob = new Blob([reportCsv(reportData)], {type: 'text/csv;charset=utf-8'});
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'rapport-' + reportData.tenant + '-' + reportData.generated_at.slice(0, 10) + '.csv';
-    document.body.append(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(a.href);
-  });
-  $('r-print').addEventListener('click', () => window.print());
 
   loadInfo();
 </script>
@@ -1408,32 +1391,6 @@ def _names_and_info(entries_by_account):
     names = {account: [e['name'] for e in entries] for account, entries in entries_by_account.items()}
     info = {account: {e['name']: e for e in entries} for account, entries in entries_by_account.items()}
     return names, info
-
-
-def search_tenant(config, tenant):
-    """Return {prefix, accounts: {id: [buckets]}, info: {id: {bucket: listing entry}}, log, has_error} for sa-<tenant>-*.
-
-    The listing already carries each bucket's quota, usage, storage location and settings, so the
-    page can show them without another call.
-    """
-    prefix = f'sa-{tenant}-'
-
-    def work():
-        return {account['id']: hm.list_buckets_info(config, account['id'])
-                for account in hm.list_accounts(config, prefix=prefix)}
-
-    entries, log, aborted = call_api(work)
-    names, info = _names_and_info(entries or {})
-    has_error = aborted or any(
-        line.startswith(('Error', 'Network error')) for line in log.splitlines()
-    )
-    return {
-        'prefix': prefix,
-        'accounts': dict(sorted(names.items())),
-        'info': info,
-        'log': log,
-        'has_error': has_error,
-    }
 
 
 def _find_key(value, key):
@@ -1564,82 +1521,56 @@ def tenant_locations(config):
     return result
 
 
-def _as_number(value):
-    """A number from an int/float or a numeric string; None for anything else (including booleans)."""
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        return value
-    try:
-        return int(str(value).strip())
-    except ValueError:
-        return None
+def _wildcard_regex(pattern):
+    """Case-insensitive regex for a name or a pattern where * stands for any characters."""
+    return re.compile('.*'.join(re.escape(part) for part in pattern.split('*')) + r'\Z', re.IGNORECASE)
 
 
-def build_report(config, tenant):
-    """Per-tenant report: every bucket of the tenant's accounts with its quota, usage and object count.
+def _error_in(log):
+    return any(line.startswith(('Error', 'Network error')) for line in log.splitlines())
 
-    All of it comes from the bucket listing (one call per account), so there is no call per bucket.
-    Accounts are matched on the exact tenant (sa-act-0001 belongs to "act", sa-act-geoportal-0001 to
-    "act-geoportal"). A value the listing does not carry is None.
+
+def search(config, kind, query):
+    """Search by tenant, storage account or bucket, with a full name or a pattern using * (fina*, *-0001, *docs*).
+
+    tenant   -> the accounts sa-<tenant>-<number> whose tenant matches, with all their buckets
+    account  -> the accounts whose id matches (the sa- prefix may be left out), with all their buckets
+    bucket   -> the buckets whose name matches, with their account. A full name costs one direct call;
+                a pattern lists every account (one API call each).
+
+    The bucket listing already carries each bucket's quota, usage and object count, so nothing more is
+    needed to show them. Returns {kind, query, accounts: {id: [names]}, info: {id: {name: entry}}, scanned,
+    status, found_without_owner, message, log, has_error}.
     """
     result = {
-        'tenant': tenant,
-        'generated_at': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'),
-        'accounts': [], 'warnings': [],
+        'kind': kind, 'query': query, 'accounts': {}, 'info': {}, 'scanned': 0, 'status': None,
+        'found_without_owner': False, 'message': '', 'has_error': False,
     }
 
-    def work():
-        for account in hm.list_accounts(config, prefix=f'sa-{tenant}-'):
-            if tenant_of(account['id']) != tenant:
-                continue
-            rows = [{
-                'name': e['name'],
-                'storage_location': e.get('storage_location') if isinstance(e.get('storage_location'), str) else None,
-                'quota_bytes': _as_number(e.get('hard_quota')),
-                'used_bytes': _as_number(e.get('bytes_used')),
-                'objects': _as_number(e.get('object_count')),
-                'created': str(e['creation_time']) if e.get('creation_time') is not None else None,
-            } for e in hm.list_buckets_info(config, account['id'])]
-            result['accounts'].append({'account': account['id'], 'buckets': rows})
-
-    _, log, aborted = call_api(work)
-    if aborted:
-        result['warnings'].append(MSG_NO_CREDS)
-    rows = [b for a in result['accounts'] for b in a['buckets']]
-    missing = sum(1 for b in rows if b['quota_bytes'] is None or b['used_bytes'] is None)
-    if missing:
-        result['warnings'].append(f"{missing} bucket(s) sans quota ou sans utilisation dans le listage de l'API.")
-    result['log'] = log
-    result['has_error'] = aborted or any(line.startswith(('Error', 'Network error')) for line in log.splitlines())
-    return result
-
-
-def find_bucket(config, name, scan):
-    """Look a bucket up without knowing its account.
-
-    Direct (scan=False): one GET on the exact name; the owner is read from the
-    response's `service_instance`. Scan: list every account and keep the
-    buckets whose name contains `name` (case-insensitive), which costs one API
-    call per account. Returns {name, mode, accounts: {id: [buckets]},
-    found_without_owner, scanned, message, log, has_error}.
-    """
-    result = {
-        'name': name, 'mode': 'scan' if scan else 'direct', 'accounts': {}, 'info': {},
-        'found_without_owner': False, 'scanned': 0, 'message': '', 'has_error': False, 'status': None,
-    }
+    def collect(accounts, keep=None):
+        for account in accounts:
+            entries = [e for e in hm.list_buckets_info(config, account['id']) if keep is None or keep(e['name'])]
+            if entries or keep is None:
+                result['accounts'][account['id']] = [e['name'] for e in entries]
+                result['info'][account['id']] = {e['name']: e for e in entries}
+        result['scanned'] = len(accounts)
 
     def work():
-        if scan:
-            needle = name.lower()
-            accounts = hm.list_accounts(config, prefix='sa-')
-            for account in accounts:
-                matches = [e for e in hm.list_buckets_info(config, account['id']) if needle in e['name'].lower()]
-                if matches:
-                    result['accounts'][account['id']] = [e['name'] for e in matches]
-                    result['info'][account['id']] = {e['name']: e for e in matches}
-            result['scanned'] = len(accounts)
-            return
+        if kind == 'tenant':
+            matches = _wildcard_regex(query).match
+            collect([a for a in hm.list_accounts(config, prefix='sa-' + query.split('*', 1)[0])
+                     if matches(tenant_of(a['id']))])
+        elif kind == 'account':
+            pattern = query if query.lower().startswith('sa-') or query.startswith('*') else 'sa-' + query
+            matches = _wildcard_regex(pattern).match
+            collect([a for a in hm.list_accounts(config, prefix=pattern.split('*', 1)[0]) if matches(a['id'])])
+        elif '*' in query:
+            matches = _wildcard_regex(query).match
+            collect(hm.list_accounts(config, prefix='sa-'), keep=matches)
+        else:
+            find_direct(query)
+
+    def find_direct(name):
         if not BUCKET_NAME_RE.match(name):
             return
         status, text, error = _http(lambda: hm.get_bucket(config, name))
@@ -1656,19 +1587,20 @@ def find_bucket(config, name, scan):
             owner = _find_key(details, 'service_instance')
             if not (isinstance(owner, str) and ACCOUNT_RE.match(owner)):
                 owner = _find_account(details)
-            if owner:
-                result['accounts'][owner] = [name]
-            else:
+            if not owner:
                 result['found_without_owner'] = True
+                return
+            result['accounts'][owner] = [name]
+            # the listing of the owner account carries the quota, usage and object count
+            collect([{'id': owner}], keep=lambda n: n == name)
+            result['accounts'].setdefault(owner, [name])
         elif status != 404:
             result.update(message=f'Échec : HTTP {status} - {text[:500]}', has_error=True)
 
     _, log, aborted = call_api(work)
     if aborted:
         result.update(message=MSG_NO_CREDS, has_error=True)
-    result['has_error'] = result['has_error'] or any(
-        line.startswith(('Error', 'Network error')) for line in log.splitlines()
-    )
+    result['has_error'] = result['has_error'] or _error_in(log)
     result['accounts'] = dict(sorted(result['accounts'].items()))
     result['log'] = log
     return result
@@ -2472,25 +2404,16 @@ class Handler(BaseHTTPRequestHandler):
             })
         elif url.path == '/api/tenants':
             self._json(200, list_tenants(self.config, self.locations))
-        elif url.path == '/api/report':
-            tenant = (parse_qs(url.query).get('tenant') or [''])[0].strip()
-            if not TENANT_RE.match(tenant):
-                self._json(400, {'error': 'Tenant invalide (lettres, chiffres, - et _ uniquement).'})
-                return
-            self._json(200, build_report(self.config, tenant))
-        elif url.path == '/api/bucket/find':
-            query = parse_qs(url.query)
-            name = (query.get('name') or [''])[0].strip()
-            if not FIND_RE.match(name):
-                self._json(400, {'error': 'Nom de bucket invalide (lettres, chiffres, . - et _ uniquement).'})
-                return
-            self._json(200, find_bucket(self.config, name, scan=(query.get('scan') or [''])[0] == '1'))
         elif url.path == '/api/search':
-            tenant = (parse_qs(url.query).get('tenant') or [''])[0].strip()
-            if not TENANT_RE.match(tenant):
-                self._json(400, {'error': 'Tenant invalide (lettres, chiffres, - et _ uniquement).'})
-                return
-            self._json(200, search_tenant(self.config, tenant))
+            query = parse_qs(url.query)
+            kind = (query.get('kind') or [''])[0]
+            text = (query.get('q') or [''])[0].strip()
+            if kind not in SEARCH_KINDS:
+                self._json(400, {'error': 'Type de recherche inconnu.'})
+            elif not PATTERN_RE.match(text) or not text.strip('*'):
+                self._json(400, {'error': 'Nom invalide (lettres, chiffres, . - _ et * uniquement).'})
+            else:
+                self._json(200, search(self.config, kind, text))
         else:
             self._json(404, {'error': 'not found'})
 
