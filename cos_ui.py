@@ -61,7 +61,7 @@ CV_PREFIX = 'cv-'                                                      # contain
 LABEL_SUFFIX_RE = re.compile(r'^[-_.A-Za-z0-9]{1,20}$')
 VAULT_TENANT_RE = re.compile(r'^cv-(.+?)(?:-\d+)?$')
 ACCOUNT_TENANT_RE = re.compile(r'^sa-(.+)-\d+$')
-PATTERN_RE = re.compile(r'^[A-Za-z0-9._*-]{1,255}$')                   # a name, or a pattern where * is a wildcard
+PATTERN_RE = re.compile(r'^[A-Za-z0-9._*,-]{1,2000}$')                   # a name, or a pattern where * is a wildcard
 SEARCH_KINDS = ('tenant', 'account', 'bucket')
 MAX_QUOTA_GB = 1_000_000
 MAX_RETENTION_DAYS = 36500
@@ -129,7 +129,8 @@ PAGE = r"""<!doctype html>
   #tenants-panel .chips { margin-top:8px; }
   .grid-form .chips { grid-column:2; margin-top:-4px; }
   @media (max-width: 560px) { .grid-form .chips { grid-column:1; } }
-  #tenants-panel input { margin-top:8px; min-width:220px; }
+  #tenants-panel input[type=text] { margin-top:8px; min-width:220px; }
+  #tenants-panel input[type=checkbox] { min-width:0; margin:0; }
   #status { margin:12px 0; color:var(--muted); min-height:1.5em; }
   #status.error { color:var(--err); }
   .toolbar { display:none; gap:8px; margin:8px 0 16px; flex-wrap:wrap; }
@@ -191,7 +192,7 @@ PAGE = r"""<!doctype html>
         <option value="bucket">Bucket</option>
       </select>
       <input type="text" id="query" placeholder="nom complet ou avec *" autocomplete="off" autofocus required
-             maxlength="255" pattern="[A-Za-z0-9._*\-]+" list="tenants-datalist">
+             maxlength="2000" pattern="[A-Za-z0-9._*,\-]+" list="tenants-datalist">
       <button type="submit" id="go">Rechercher</button>
       <button type="button" class="secondary" id="tenants-go">Lister les tenants</button>
     </form>
@@ -985,7 +986,7 @@ PAGE = r"""<!doctype html>
   }
 
   const KIND_HELP = {
-    tenant: ['fina ou fi*', 'Nom complet du tenant (fina) ou motif avec * (fi*, *ina*). Un appel API par compte trouvé.'],
+    tenant: ['fina ou fi*', 'Nom complet du tenant (fina) ou motif avec * (fi*, *ina*) ; plusieurs tenants séparés par des virgules (fina,act). « Lister les tenants » permet de cocher plusieurs tenants. Un appel API par compte trouvé.'],
     account: ['sa-fina-0001 ou sa-fina-*', 'Nom complet du storage account (sa-fina-0001) ou motif avec * (sa-fina-*, *-0001). Le préfixe sa- peut être omis.'],
     bucket: ['fina-docs ou *docs*', 'Nom complet du bucket : un seul appel. Avec * (*docs*, fina-*) : tous les comptes sont parcourus, un appel API par compte, ça peut être long.'],
   };
@@ -1037,7 +1038,7 @@ PAGE = r"""<!doctype html>
       $('filter').value = '';
       $('toolbar').style.display = total || n ? 'flex' : 'none';
       fillAccounts();
-      if (kind === 'tenant' && !value.includes('*') && (!$('a-id').value.trim() || $('a-id').dataset.prefilled)) {
+      if (kind === 'tenant' && !/[*,]/.test(value) && (!$('a-id').value.trim() || $('a-id').dataset.prefilled)) {
         $('a-id').value = 'sa-' + value + '-'; $('a-id').dataset.prefilled = '1';
       }
       render();
@@ -1075,6 +1076,14 @@ PAGE = r"""<!doctype html>
   $('c-location').addEventListener('input', () => { delete $('c-location').dataset.auto; });
 
   // ---- tenants -------------------------------------------------------------------
+  const picked = new Set();   // tenants ticked in the panel, kept while the filter changes
+
+  function searchTenants(names) {
+    $('kind').value = 'tenant'; syncKind();
+    $('query').value = names.join(',');
+    runSearch('tenant', names.join(','), false);
+  }
+
   function renderTenants(filter) {
     const box = $('tenants-panel');
     box.textContent = '';
@@ -1082,20 +1091,33 @@ PAGE = r"""<!doctype html>
       ? '(déduits des container vaults cv-<tenant>-<numéro>)' : '(déduits des comptes sa-<tenant>-<numéro>)')));
     const input = el('input'); input.type = 'text'; input.placeholder = 'Filtrer...'; input.value = filter || '';
     input.addEventListener('input', () => renderTenants(input.value)); box.append(el('br'), input);
-    const chips = el('div', undefined, 'chips');
-    for (const t of tenants) {
-      if (filter && !t.name.toLowerCase().includes(filter.toLowerCase())) continue;
+    const shown = tenants.filter(t => !filter || t.name.toLowerCase().includes(filter.toLowerCase()));
+    const list = el('div', undefined, 'chips');
+    const go = el('button', '', 'small');
+    const updateGo = () => { go.textContent = 'Afficher les buckets (' + picked.size + ' tenant(s))'; go.disabled = !picked.size; };
+    for (const t of shown) {
       const items = t.vaults || t.accounts;
-      const b = el('button', t.name + ' (' + items.length + ')', 'small secondary');
-      b.title = items.join(', ');
-      b.addEventListener('click', () => { $('kind').value = 'tenant'; syncKind(); $('query').value = t.name; runSearch('tenant', t.name, false); });
-      chips.append(b);
+      const label = el('label');
+      label.style.cssText = 'display:inline-flex;gap:4px;align-items:center;border:1px solid var(--line);border-radius:6px;padding:2px 8px;background:var(--bg)';
+      label.title = items.join(', ');
+      const cb = el('input'); cb.type = 'checkbox'; cb.checked = picked.has(t.name);
+      cb.addEventListener('change', () => { cb.checked ? picked.add(t.name) : picked.delete(t.name); updateGo(); });
+      label.append(cb, t.name + ' (' + items.length + ')');
+      list.append(label);
     }
+    go.addEventListener('click', () => searchTenants([...picked].sort()));
+    const all = el('button', 'Tout cocher' + (filter ? ' (filtrés)' : ''), 'small secondary');
+    all.addEventListener('click', () => { shown.forEach(t => picked.add(t.name)); renderTenants(filter); });
+    const none = el('button', 'Tout décocher', 'small secondary');
+    none.addEventListener('click', () => { picked.clear(); renderTenants(filter); });
     const close = el('button', 'Fermer', 'small secondary');
     close.addEventListener('click', () => { box.textContent = ''; box.hidden = true; });
-    box.append(chips, el('br'), close);
+    const bar = el('div', undefined, 'row-buttons');
+    bar.append(go, all, none, close);
+    box.append(list, bar);
+    updateGo();
     box.hidden = false;
-    if (filter) input.focus();
+    if (filter) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
   }
 
   $('tenants-go').addEventListener('click', async () => {
@@ -1557,9 +1579,13 @@ def search(config, kind, query):
 
     def work():
         if kind == 'tenant':
-            matches = _wildcard_regex(query).match
-            collect([a for a in hm.list_accounts(config, prefix='sa-' + query.split('*', 1)[0])
-                     if matches(tenant_of(a['id']))])
+            # one or several tenants (comma-separated), each a full name or a pattern
+            patterns = [p.strip() for p in query.split(',') if p.strip()]
+            matchers = [_wildcard_regex(p).match for p in patterns]
+            prefixes = {p.split('*', 1)[0] for p in patterns}
+            prefix = prefixes.pop() if len(prefixes) == 1 else ''
+            collect([a for a in hm.list_accounts(config, prefix='sa-' + prefix)
+                     if any(m(tenant_of(a['id'])) for m in matchers)])
         elif kind == 'account':
             pattern = query if query.lower().startswith('sa-') or query.startswith('*') else 'sa-' + query
             matches = _wildcard_regex(pattern).match
@@ -2410,8 +2436,8 @@ class Handler(BaseHTTPRequestHandler):
             text = (query.get('q') or [''])[0].strip()
             if kind not in SEARCH_KINDS:
                 self._json(400, {'error': 'Type de recherche inconnu.'})
-            elif not PATTERN_RE.match(text) or not text.strip('*'):
-                self._json(400, {'error': 'Nom invalide (lettres, chiffres, . - _ et * uniquement).'})
+            elif not PATTERN_RE.match(text) or not text.strip('*,') or (',' in text and kind != 'tenant'):
+                self._json(400, {'error': 'Nom invalide (lettres, chiffres, . - _ et * uniquement ; la virgule sépare plusieurs tenants).'})
             else:
                 self._json(200, search(self.config, kind, text))
         else:
