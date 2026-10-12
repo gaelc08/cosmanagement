@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Hive bucket / storage account / credentials command line: python hive_management.py ..."""
+"""Hive bucket / storage account / credentials command line: python3 hive_management.py ..."""
 from cosmanagement.hive_management import main
 
 if __name__ == '__main__':

@@ -2,9 +2,9 @@
 Local web UI to manage IBM COS storage accounts, buckets and credentials.
 
 Usage:
-    python cos_ui.py                        # http://127.0.0.1:8765, opens the browser
-    python cos_ui.py --port 9000 --no-browser
-    python -m cosmanagement.ui --no-browser
+    python3 cos_ui.py                        # http://127.0.0.1:8765, opens the browser
+    python3 cos_ui.py --port 9000 --no-browser
+    python3 -m cosmanagement.ui --no-browser
 
 Tabs:
   Search      by tenant, storage account or bucket, with a full name or a pattern using * (fina*, *-0001, *docs*).

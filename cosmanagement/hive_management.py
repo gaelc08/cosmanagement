@@ -19,12 +19,12 @@ Usage:
    environment variables directly, or via a local, gitignored secrets.json
    (see load_auth_header()).
 3. Run the script with the desired action:
-   - Full flow:              python hive_management.py --action create_all
-   - Storage accounts only:  python hive_management.py --action create_sa
-   - Buckets only:           python hive_management.py --action create_buckets
-   - New credentials only:   python hive_management.py --action create_creds
-   - Retrieve existing:      python hive_management.py --action get_creds
-   - List all Hive buckets:  python hive_management.py --action list_buckets
+   - Full flow:              python3 hive_management.py --action create_all
+   - Storage accounts only:  python3 hive_management.py --action create_sa
+   - Buckets only:           python3 hive_management.py --action create_buckets
+   - New credentials only:   python3 hive_management.py --action create_creds
+   - Retrieve existing:      python3 hive_management.py --action get_creds
+   - List all Hive buckets:  python3 hive_management.py --action list_buckets
 """
 
 import argparse

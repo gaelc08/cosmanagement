@@ -74,7 +74,7 @@ If the IBM COS API uses a self-signed or custom certificate, you need to:
 
 ## Repository layout
 ```
-cos_ui.py, hive_management.py   thin launchers (python cos_ui.py / python hive_management.py ...)
+cos_ui.py, hive_management.py   thin launchers (python3 cos_ui.py / python3 hive_management.py ...)
 cosmanagement/
   hive_management.py            Hive API client and command line (storage accounts, buckets, credentials)
   cos2pag/                      COS -> PAG replication setup through PDR (its own docs: docs/cos2pag.md)
@@ -100,15 +100,15 @@ pyproject.toml                  packaging (pip install . gives cos-ui, cos2pag a
 4. Run the script with the desired action:
    - To create storage accounts, buckets, and credentials:
      ```bash
-     python hive_management.py --action create_all
+     python3 hive_management.py --action create_all
      ```
    - To retrieve existing credentials:
      ```bash
-     python hive_management.py --action get_creds
+     python3 hive_management.py --action get_creds
      ```
    - To list every bucket across all Hive storage accounts:
      ```bash
-     python hive_management.py --action list_buckets
+     python3 hive_management.py --action list_buckets
      ```
      By default this lists accounts whose id starts with `sa-ctie-hive-`
      (override with `--account-prefix`), and prints each account's
@@ -118,8 +118,8 @@ pyproject.toml                  packaging (pip install . gives cos-ui, cos2pag a
 ### Web UI (`cos_ui.py`)
 A local web interface to manage IBM COS storage accounts, buckets and credentials. It is not tied to the Hive naming: accounts, buckets and their settings are whatever you type or load.
 ```bash
-python cos_ui.py                   # opens http://127.0.0.1:8765
-python cos_ui.py --port 9000 --no-browser
+python3 cos_ui.py                   # opens http://127.0.0.1:8765
+python3 cos_ui.py --port 9000 --no-browser
 ```
 It only listens on `127.0.0.1`, and refuses any request whose `Host` header is not `127.0.0.1` or `localhost` (on any port, so a port forward such as VS Code Remote or `ssh -L` that changes the local port works), as a protection against DNS rebinding. If the page answers `forbidden host: '<name>'` because you reach it under another name (machine name, tunnel, proxy), restart with `--allow-host <name>` (repeatable); the message and the console show the exact name to use. From `config.json` it only needs the `api` section (`base_url`, SSL settings); credentials come from `.env` / the environment / `secrets.json` as for `hive_management.py`.
 
