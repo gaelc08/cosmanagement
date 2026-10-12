@@ -106,6 +106,7 @@ function selectBucket(account, bucket) {
   add('Delete the bucket', 'danger', () => deleteBucket(account, bucket));
   closePanel($('m-repl'));
   showTab('modify');
+  openLifecycle(account, bucket);
   return openBucket(account, bucket, 'edit');
 }
 

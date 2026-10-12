@@ -270,6 +270,7 @@ def replication_status(config, bucket):
             mask = schedule.get('dowMask') if isinstance(schedule.get('dowMask'), int) else 0
             result['pdr'] = {
                 'found': task is not None, 'id': (task or {}).get('id'),
+                'deletion_enabled': bool(((task or {}).get('options') or {}).get('enableDeletion')),
                 'schedule': {'enabled': bool(schedule.get('enabled')), 'hour': schedule.get('hour'),
                              'days': [name for name, bit in DAY_BITS if mask & bit]} if schedule else None,
             }
