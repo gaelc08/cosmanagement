@@ -1,0 +1,225 @@
+# cos2pag configuration.
+#
+# Any value written as ${VAR_NAME} is read from the environment at load
+# time -- put secrets there, not in this file. Copy this file to
+# config.yaml (or point --config at your own copy) and fill it in.
+
+cos:
+  # Service API (bucket management: acl/firewall/notifications) accesser
+  # endpoint, container mode.
+  base_url: "https://osiris-109-a-fe.ctie.etat.lu:8338"
+  auth:
+    type: basic
+    username: "${COS_USERNAME}"
+    password: "${COS_PASSWORD}"
+    # type: bearer
+    # token: "${COS_API_TOKEN}"
+  # This environment's appliances use self-signed certs (CN doesn't match
+  # the hostname), so verification is off here. Set this to a CA bundle
+  # path instead (e.g. "/etc/ssl/certs/internal-ca.pem") if you'd rather
+  # keep verification on with the appliance's real certificate.
+  verify_ssl: false
+  timeout: 30
+
+  # Backup service account to grant access to the bucket's ACL so it can
+  # be read for replication. The grantee is "<project_id>@<account_uuid>",
+  # not the access/secret key (those are for signing S3 requests, not ACLs).
+  backup_service_account:
+    grantee: "sa-backup@00000000-0000-0000-0000-000000000002"
+    permission: "READ"     # READ | WRITE | READ_ACP | WRITE_ACP | FULL_CONTROL
+
+  # PDR's IP (CIDR) to add to the bucket's firewall allow-list.
+  pdr_ip: "148.110.134.30/32"
+
+  # Safety switch: if the bucket currently has NO allowed_ip whitelist at
+  # all (i.e. it is open to any IP), adding pdr_ip alone would instead
+  # CREATE a whitelist and lock the bucket down to only that IP. Leave
+  # this false unless that lock-down is actually what you want.
+  allow_create_whitelist: false
+
+pag:
+  base_url: "https://scrat-1.ctie.etat.lu:4200"
+  auth:
+    type: basic
+    username: "${PAG_USERNAME}"
+    password: "${PAG_PASSWORD}"
+  verify_ssl: false  # see cos.verify_ssl note above
+  timeout: 30
+
+  # One partition per tenant. The tenant name always comes from the
+  # required `--tenant` CLI argument, never guessed from the bucket name:
+  # real tenant codes are ambiguous prefixes of each other (e.g. "ME",
+  # "ME-SR", "ME-SRE", "ME-SRE2"; "ACT", "ACT-GEOPORTAL", "ACT-ILDG"), so
+  # auto-derivation risks silently picking the wrong tenant.
+
+  # If the tenant's partition doesn't exist yet, it is created with these
+  # settings (a PartitionInformationPatch body, "name" excluded -- that's
+  # set to the tenant name automatically). Copied from the real
+  # "costotape" partition (GET /api/partitions on the PAG admin API).
+  new_partition_defaults:
+    writeProtected: false
+    storageClassTypes: "TapeOnly"
+    devType: "MC_T_GENERIC"
+    devCodeRate: "CodeRate_1_2"
+    devAllocStrat: "Ascending"
+    devAllocThreshold: 0
+    devAllocParallelism: 1
+    devAllocMediaPref: "Unspecified"
+    devAllocMediaAlt: "Unspecified"
+    devAllocSrcPrio: 1
+    devAllocSrcLimit: []
+    cryptLocked: false
+    cryptMode: "Off"
+    cryptAlgo: "Off"
+    pstBufCfgPresent: true
+    optionForceHighAvailability: false
+    optionAllowReducedRedundancy: false
+
+  # Only used if new_partition_defaults.cryptMode is "PrivKey" -- the
+  # password required to create a partition with that encryption mode.
+  # partition_encryption_password: "${PAG_PARTITION_ENCRYPTION_PASSWORD}"
+
+  # Persistent buffer for the partition (System > Partitions > Persistent
+  # Buffer in the PAG GUI). Applied to the tenant's partition whether it
+  # was just created or already existed. Omit this whole block to skip
+  # managing it.
+  persistent_buffer:
+    path: "/PoINT/PAG/PBUFFER"
+    enabled: true
+    flush_gradually: false   # false = "Completely, when triggered"; true = "Gradually, when triggered"
+    trigger_on_max_age: {value: 6, unit: hours}     # seconds | minutes | hours | days
+    trigger_on_max_size: {value: 100, unit: gb}     # byte | kb | mb | gb | tb
+    object_size_limit: {value: 0, unit: byte}       # 0 = "Not set"
+
+  # PAG user/group/ESP that PDR authenticates as; the created repository
+  # is owned by this principal so PDR can write replicated objects to it.
+  owner:
+    uuid: "91a7b65a-608a-f2bf-1d7d-cdad82383e7f"   # PAG user "pdr"
+    type: "User"          # User | Group | ESP
+
+  hidden: false
+  write_protected: false
+
+  # Object versioning on the repository (Disabled | Suspended | Enabled).
+  object_versioning: "Enabled"
+
+  # Lifecycle Rules (the "Rules" tab on the repository in the PAG GUI).
+  # This is NOT part of the documented PAG Administration REST API -- the
+  # GUI itself posts to an internal, session/CSRF-based endpoint
+  # (/Storage/ChangeRules) that isn't safe to script against. Instead,
+  # this is applied via the standard S3 Bucket Lifecycle Configuration API
+  # (PUT/GET .../?lifecycle) directly against PAG's own S3 endpoint (see
+  # pdr.target_s3 below, reused here since it's already the right
+  # connection/credentials for this bucket). Each key below maps to one
+  # rule; omit a key to skip that rule entirely. Omit this whole block to
+  # leave the repository's lifecycle unmanaged.
+  lifecycle:
+    # "Delete Incomplete Multipart Uploads"
+    abort_incomplete_multipart_upload_days: 7
+    # "Expiration of Current Object Versions"
+    # current_version_expiration_days: 90
+    # "Delete Expired Delete Markers"
+    delete_expired_delete_markers: true
+    # "Expiration of Noncurrent Object Versions"
+    noncurrent_version_expiration_days: 30
+    # newer_noncurrent_versions: 1
+    # "Transition of Current/Noncurrent Object Versions to Tape" -- PAG
+    # repositories on a TapeOnly partition are tape already, so these are
+    # normally left unset; only needed for mixed disk/tape setups.
+    # current_version_transition_days: 30
+    # noncurrent_version_transition_days: 30
+    # transition_storage_class: "DEEP_ARCHIVE"
+
+pdr:
+  base_url: "https://hathor-1.ctie.etat.lu:3601"
+  auth:
+    type: basic
+    username: "${PDR_USERNAME}"
+    password: "${PDR_PASSWORD}"
+  verify_ssl: false  # see cos.verify_ssl note above
+  timeout: 30
+
+  # S3 credentials PDR uses to read from the COS bucket.
+  # This is the S3 *data* endpoint (object GET/PUT), distinct from
+  # cos.base_url above (8338 is the Service API used only for bucket
+  # management: acl/firewall/notifications).
+  source_s3:
+    server_url: "https://s3.govcloud.etat.lu"
+    verify_ssl: false  # see cos.verify_ssl note above
+    access_key: "${PDR_COS_ACCESS_KEY}"
+    secret_key: "${PDR_COS_SECRET_KEY}"
+    force_path_style: true
+    signature_version: 4
+    timeout: 300
+    max_error_retry: 2
+
+  # S3 credentials PDR uses to write to the PAG repository. Distinct from
+  # pag.base_url above (4200 is PAG's admin UI/API port; 4443 is its S3
+  # data port). Also used directly (via boto3) to set pag.lifecycle's S3
+  # Lifecycle Configuration on the repository -- verify_ssl matters here
+  # for that, not just for PDR's own connection.
+  target_s3:
+    server_url: "https://scrat-1.ctie.etat.lu:4443"
+    verify_ssl: false  # see cos.verify_ssl note above
+    access_key: "${PDR_PAG_ACCESS_KEY}"
+    secret_key: "${PDR_PAG_SECRET_KEY}"
+    force_path_style: true
+    signature_version: 4
+    timeout: 300
+    max_error_retry: 2
+
+  copy_options:
+    acl: false
+    tags: true
+    metadata: true
+    object_lock: false
+    mpu_part_size_mb: 0
+    read_in_tape_order: false
+    max_parallel_jobs: 2
+    check_destination: false
+    enable_deletion: true
+    # Deletion Delay is always 0 (not configurable here): deletions are
+    # mirrored immediately, and object retention/expiry is governed
+    # entirely by PAG's S3 lifecycle configuration instead (see
+    # pag.lifecycle).
+
+  schedule:
+    enabled: true
+    week_multiplier: 1
+
+    # Spreads each bucket's weekly copy job across a grid of slots
+    # (here: every 2 hours across Saturday + Sunday) instead of every
+    # bucket firing at the same dow_mask/hour, which would start every
+    # task's consolidation copy at once. Each bucket's slot is derived
+    # from a hash of its own name: the same bucket always lands on the
+    # same slot (stable across re-runs, no state file needed), and
+    # different buckets spread out pseudo-randomly across all slots.
+    # Remove this block and set dow_mask/hour directly below instead if
+    # you want every bucket pinned to the same fixed schedule.
+    weekend_spread:
+      days: [Saturday, Sunday]
+      start_hour: 0
+      interval_hours: 2
+
+    # dow_mask: 64  # bitmask of days of week the job runs on -- ignored
+    # hour: 2       # local hour of day the job starts -- ignored
+    # (both ignored while weekend_spread is set above)
+
+  # Object-change notifications for the replication task itself (separate
+  # from cos.notifications, which configures COS's own bucket
+  # notifications). Uses IBM COS's Kafka notification schema.
+  notifications:
+    enabled: true
+    type: kafka
+    kafka:
+      schema: IBMCOS
+      server_url: "thoth-1.ctie.etat.lu:9092,thoth-2.ctie.etat.lu:9092,thoth-3.ctie.etat.lu:9092"
+      connection_type: "None"
+      # topic defaults to the bucket name if omitted, same convention as
+      # cos.notifications
+
+  # Start an initial full Copy job right after the task is created, so
+  # objects already written to the bucket before replication was set up
+  # get copied too (notifications/schedule only pick up future changes).
+  # Set to false to opt out.
+  auto_start_job: true

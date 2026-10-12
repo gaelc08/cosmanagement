@@ -1,0 +1,425 @@
+<meta charset="utf-8">
+<title>cos2pag</title>
+<meta name="description" content="Résumé, diagramme de workflow et référence API de l'outil cos2pag">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --surface: #ffffff;
+    --surface-2: #eef1f3;
+    --text: #14181d;
+    --muted: #5b6472;
+    --border: #dce1e7;
+    --accent: #1f6f78;
+    --accent-strong: #16535a;
+    --accent-soft: #e4f1f1;
+    --get: #1f6f78;
+    --write: #a15c2e;
+    --write-soft: #f4e8de;
+    --shadow: 0 1px 2px rgba(20,24,29,0.05), 0 8px 24px -12px rgba(20,24,29,0.12);
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1418;
+      --surface: #161d24;
+      --surface-2: #1c242c;
+      --text: #e8edf0;
+      --muted: #8b96a3;
+      --border: #29323b;
+      --accent: #56b8b1;
+      --accent-strong: #7ecfc9;
+      --accent-soft: #16302f;
+      --get: #56b8b1;
+      --write: #e0925a;
+      --write-soft: #2f2318;
+      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 12px 28px -14px rgba(0,0,0,0.6);
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1418;
+    --surface: #161d24;
+    --surface-2: #1c242c;
+    --text: #e8edf0;
+    --muted: #8b96a3;
+    --border: #29323b;
+    --accent: #56b8b1;
+    --accent-strong: #7ecfc9;
+    --accent-soft: #16302f;
+    --get: #56b8b1;
+    --write: #e0925a;
+    --write-soft: #2f2318;
+    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 12px 28px -14px rgba(0,0,0,0.6);
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+    line-height: 1.55;
+    padding-inline: 20px;
+    padding-block: 32px 64px;
+  }
+  main { max-width: 880px; margin: 0 auto; }
+
+  code, .mono { font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace; }
+
+  h1, h2, h3 { text-wrap: balance; font-weight: 600; color: var(--text); }
+  h1 { font-size: clamp(1.8rem, 4vw, 2.4rem); margin: 0 0 6px; letter-spacing: -0.01em; }
+  h2 {
+    font-size: 1.3rem; margin: 0 0 4px; display: flex; align-items: baseline; gap: 10px;
+  }
+  h2 .num {
+    font-family: "IBM Plex Mono", monospace; font-size: 0.85rem; font-weight: 500;
+    color: var(--accent); background: var(--accent-soft); border-radius: 6px;
+    padding: 2px 8px;
+  }
+  p { margin: 0 0 14px; max-width: 66ch; }
+  p:last-child { margin-bottom: 0; }
+
+  header.top {
+    display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between;
+    gap: 16px; margin-bottom: 8px; padding-bottom: 20px; border-bottom: 1px solid var(--border);
+  }
+  header.top .tagline { color: var(--muted); font-size: 0.98rem; margin-top: 6px; max-width: 52ch; }
+  nav.jump {
+    display: flex; gap: 6px; flex-wrap: wrap;
+  }
+  nav.jump a {
+    font-size: 0.82rem; color: var(--muted); text-decoration: none;
+    border: 1px solid var(--border); border-radius: 999px; padding: 6px 12px;
+    background: var(--surface); white-space: nowrap;
+  }
+  nav.jump a:hover { color: var(--accent); border-color: var(--accent); }
+
+  section { margin-top: 44px; scroll-margin-top: 16px; }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    box-shadow: var(--shadow);
+  }
+
+  .principles {
+    list-style: none; margin: 18px 0 0; padding: 0;
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px;
+  }
+  .principles li {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px; font-size: 0.92rem;
+  }
+  .principles li strong { display: block; font-size: 0.86rem; color: var(--accent); margin-bottom: 4px; }
+
+  figure { margin: 22px 0 0; }
+  .diagram-scroll {
+    overflow-x: auto; border-radius: 12px;
+  }
+  .diagram-scroll svg { display: block; min-width: 860px; width: 100%; height: auto; }
+  figcaption { color: var(--muted); font-size: 0.86rem; margin-top: 10px; max-width: 70ch; }
+
+  .legend-row {
+    display: flex; flex-wrap: wrap; gap: 18px; margin-top: 14px; font-size: 0.82rem; color: var(--muted);
+  }
+  .legend-row span { display: inline-flex; align-items: center; gap: 6px; }
+  .swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+
+  .device-grid { display: grid; gap: 16px; margin-top: 18px; }
+  .device {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 18px 20px; box-shadow: var(--shadow);
+  }
+  .device-head {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+    margin-bottom: 12px;
+  }
+  .device-head h3 { margin: 0; font-size: 1.05rem; display: flex; align-items: center; gap: 8px; }
+  .device-head .badge {
+    font-family: "IBM Plex Mono", monospace; font-size: 0.72rem; font-weight: 600;
+    background: var(--accent-soft); color: var(--accent-strong); border-radius: 6px;
+    padding: 2px 7px;
+  }
+  .device-head .host { font-family: "IBM Plex Mono", monospace; font-size: 0.82rem; color: var(--muted); }
+
+  table.api { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  table.api th, table.api td { text-align: left; padding: 8px 10px; vertical-align: top; }
+  table.api thead th {
+    font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted);
+    border-bottom: 1px solid var(--border); font-weight: 600;
+  }
+  table.api tbody tr + tr td { border-top: 1px solid var(--border); }
+  table.api .verb { font-family: "IBM Plex Mono", monospace; font-weight: 600; font-size: 0.82rem; white-space: nowrap; }
+  table.api .verb.get { color: var(--get); }
+  table.api .verb.write { color: var(--write); }
+  table.api .path { font-family: "IBM Plex Mono", monospace; font-size: 0.82rem; white-space: nowrap; }
+  table.api .desc { color: var(--muted); }
+  table.api .cond { color: var(--muted); font-size: 0.78rem; }
+  .table-wrap { overflow-x: auto; }
+
+  footer.note {
+    margin-top: 48px; padding-top: 18px; border-top: 1px solid var(--border);
+    color: var(--muted); font-size: 0.82rem;
+  }
+  footer.note code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+
+  @media (max-width: 520px) {
+    table.api .desc { display: block; margin-top: 2px; }
+  }
+</style>
+
+<main>
+  <header class="top">
+    <div>
+      <h1>cos2pag</h1>
+      <div class="tagline">Automatise la réplication d'un bucket IBM Cloud Object Storage vers PoINT Archival Gateway, orchestrée par PoINT Data Replicator — CTIE.</div>
+    </div>
+    <nav class="jump">
+      <a href="#resume">Résumé</a>
+      <a href="#workflow">Workflow</a>
+      <a href="#api">Référence API</a>
+    </nav>
+  </header>
+
+  <section id="resume">
+    <h2><span class="num">01</span>Résumé</h2>
+    <p>Pour un bucket COS donné, <code>cos2pag</code> met en place — et maintient — toute la chaîne de réplication vers l'archivage sur bande via PAG, sans intervention manuelle sur les trois systèmes :</p>
+    <p><strong>Sur COS</strong> : ajoute le compte de service de sauvegarde à l'ACL du bucket, ajoute l'IP de PDR à la liste blanche du firewall, et configure le topic de notification du bucket.</p>
+    <p><strong>Sur PAG</strong> : crée la partition du tenant si elle n'existe pas encore (avec sa configuration de buffer persistant), crée ou met à jour le repository du bucket, active le versioning d'objets, et applique une politique de cycle de vie (suppression des uploads multipart incomplets, expiration des versions, suppression des marqueurs de suppression expirés).</p>
+    <p><strong>Sur PDR</strong> : crée ou met à jour la tâche de réplication (source S3 = COS, cible S3 = PAG), avec planning et notifications Kafka, puis lance une copie initiale complète si la tâche vient d'être créée — sans quoi les objets déjà présents avant la mise en place ne seraient jamais copiés.</p>
+
+    <ul class="principles">
+      <li><strong>Idempotent</strong>Relancer l'outil sur un bucket déjà configuré ne republie rien : chaque étape compare l'état réel avant d'agir et ressort <code>SKIPPED</code>/<code>OK</code> si rien ne diffère.</li>
+      <li><strong>Tenant toujours explicite</strong><code>--tenant</code> est obligatoire en ligne de commande, jamais deviné du nom du bucket — des codes tenant réels comme <code>ME</code>, <code>ME-SR</code>, <code>ME-SRE</code> se chevauchent, deviner risquerait de se tromper silencieusement.</li>
+      <li><strong>Lifecycle via l'API S3</strong>L'onglet « Rules » de PAG n'est pas exposé par l'API REST d'administration documentée (il passe par un formulaire interne à session/CSRF) — <code>cos2pag</code> applique donc les mêmes règles via l'API S3 standard de PAG, sur son port S3 dédié.</li>
+      <li><strong>Planning réparti le week-end</strong><code>pdr.schedule.weekend_spread</code> assigne à chaque bucket un créneau différent (par défaut toutes les 2h, samedi et dimanche), calculé de façon déterministe à partir du nom du bucket, pour éviter que toutes les copies hebdomadaires démarrent au même instant.</li>
+    </ul>
+  </section>
+
+  <section id="workflow">
+    <h2><span class="num">02</span>Workflow</h2>
+    <p>Une exécution traite un seul bucket et touche quatre systèmes dans l'ordre, chacun avec ses propres appels API :</p>
+
+    <figure>
+      <div class="diagram-scroll">
+      <svg viewBox="0 0 960 630" role="img" aria-label="Pipeline cos2pag : la CLI lit config.yaml et .env, puis appelle successivement COS, PAG (API d'administration), PAG (API S3) et PDR, chacun avec ses propres appels, les appels d'écriture n'étant exécutés que si un changement est réellement nécessaire.">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="currentColor"></path>
+          </marker>
+        </defs>
+
+        <!-- CLI input box -->
+        <rect x="260" y="16" width="440" height="56" rx="10" fill="var(--surface-2)" stroke="var(--border)"></rect>
+        <text x="480" y="38" text-anchor="middle" class="mono" font-size="13" fill="var(--text)" font-weight="600">python -m cos2pag &lt;bucket&gt; --tenant &lt;tenant&gt;</text>
+        <text x="480" y="56" text-anchor="middle" font-size="11" fill="var(--muted)">lit config.yaml + .env</text>
+
+        <line x1="480" y1="72" x2="480" y2="90" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)" opacity="0.55"></line>
+
+        <!-- Lane 1: COS -->
+        <g>
+          <rect x="24" y="92" width="912" height="100" rx="12" fill="var(--surface)" stroke="var(--border)"></rect>
+          <line x1="234" y1="106" x2="234" y2="178" stroke="var(--border)"></line>
+          <text x="40" y="128" font-size="14" font-weight="600" fill="var(--text)">1 · COS</text>
+          <text x="40" y="144" class="mono" font-size="10" fill="var(--muted)">osiris-…:8338</text>
+          <text x="40" y="157" font-size="9.5" fill="var(--muted)">Service API</text>
+
+          <g transform="translate(254,119)">
+            <rect width="210" height="46" rx="8" fill="var(--surface)" stroke="var(--border)"></rect>
+            <text x="10" y="18" class="mono" font-size="11"><tspan fill="var(--get)" font-weight="600">GET</tspan><tspan fill="var(--text)"> /container/{b}</tspan></text>
+            <text x="10" y="33" font-size="9.5" fill="var(--muted)">lit ACL, firewall, notifications</text>
+          </g>
+          <g transform="translate(476,119)">
+            <rect width="210" height="46" rx="8" fill="var(--surface)" stroke="var(--write)" stroke-dasharray="3 3"></rect>
+            <text x="10" y="18" class="mono" font-size="11"><tspan fill="var(--write)" font-weight="600">PATCH</tspan><tspan fill="var(--text)"> /container/{b}</tspan></text>
+            <text x="10" y="33" font-size="9.5" fill="var(--muted)">ACL + firewall — si besoin*</text>
+          </g>
+          <g transform="translate(698,119)">
+            <rect width="210" height="46" rx="8" fill="var(--surface)" stroke="var(--write)" stroke-dasharray="3 3"></rect>
+            <text x="10" y="18" class="mono" font-size="11"><tspan fill="var(--write)" font-weight="600">PATCH</tspan><tspan fill="var(--text)"> /container/{b}</tspan></text>
+            <text x="10" y="33" font-size="9.5" fill="var(--muted)">notifications.topic — si besoin*</text>
+          </g>
+        </g>
+
+        <line x1="480" y1="192" x2="480" y2="210" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)" opacity="0.55"></line>
+
+        <!-- Lane 2: PAG Admin -->
+        <g>
+          <rect x="24" y="212" width="912" height="150" rx="12" fill="var(--surface)" stroke="var(--border)"></rect>
+          <line x1="234" y1="226" x2="234" y2="348" stroke="var(--border)"></line>
+          <text x="40" y="264" font-size="14" font-weight="600" fill="var(--text)">2 · PAG</text>
+          <text x="40" y="280" class="mono" font-size="10" fill="var(--muted)">scrat-1…:4200</text>
+          <text x="40" y="293" font-size="9.5" fill="var(--muted)">Administration API</text>
+
+          <g transform="translate(254,235)">
+            <rect width="210" height="46" rx="8" fill="var(--surface)" stroke="var(--border)"></rect>
+            <text x="10" y="18" class="mono" font-size="11"><tspan fill="var(--get)" font-weight="600">GET</tspan><tspan fill="var(--text)"> /api/partitions</tspan></text>
+            <text x="10" y="33" font-size="9.5" fill="var(--muted)">cherche la partition du tenant</text>
+          </g>
+          <g transform="translate(476,235)">
+            <rect width="210" height="46" rx="8" fill="var(--surface)" stroke="var(--write)" stroke-dasharray="3 3"></rect>
+            <text x="10" y="18" class="mono" font-size="11"><tspan fill="var(--write)" font-weight="600">POST</tspan><tspan fill="var(--text)"> /api/partitions</tspan></text>
+            <text x="10" y="33" font-size="9.5" fill="var(--muted)">crée le tenant — si absent*</text>
+          </g>
+          <g transform="translate(698,235)">
+            <rect width="210" height="46" rx="8" fill="var(--surface)" stroke="var(--write)" stroke-dasharray="3 3"></rect>
+            <text x="10" y="18" class="mono" font-size="11"><tspan fill="var(--get)" font-weight="600">GET</tspan><tspan fill="var(--text)">+</tspan><tspan fill="var(--write)" font-weight="600">PUT</tspan><tspan fill="var(--text)"> pst_buffer_config</tspan></text>
+            <text x="10" y="33" font-size="9.5" fill="var(--muted)">buffer persistant — si configuré*</text>
+          </g>
+
+          <g transform="translate(254,293)">
+            <rect width="210" height="46" rx="8" fill="var(--surface)" stroke="var(--border)"></rect>
+            <text x="10" y="18" class="mono" font-size="11"><tspan fill="var(--get)" font-weight="600">GET</tspan><tspan fill="var(--text)"> /repositories</tspan></text>
+            <text x="10" y="33" font-size="9.5" fill="var(--muted)">cherche le repository du bucket</text>
+          </g>
+          <g transform="translate(476,293)">
+            <rect width="210" height="46" rx="8" fill="var(--surface)" stroke="var(--write)" stroke-dasharray="3 3"></rect>
+            <text x="10" y="18" class="mono" font-size="11"><tspan fill="var(--write)" font-weight="600">POST</tspan><tspan fill="var(--text)">/</tspan><tspan fill="var(--write)" font-weight="600">PATCH</tspan><tspan fill="var(--text)"> /repositories</tspan></text>
+            <text x="10" y="33" font-size="9.5" fill="var(--muted)">crée ou met à jour — si besoin*</text>
+          </g>
+        </g>
+
+        <line x1="480" y1="362" x2="480" y2="380" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)" opacity="0.55"></line>
+
+        <!-- Lane 3: PAG S3 -->
+        <g>
+          <rect x="24" y="382" width="912" height="90" rx="12" fill="var(--surface)" stroke="var(--border)"></rect>
+          <line x1="234" y1="396" x2="234" y2="458" stroke="var(--border)"></line>
+          <text x="40" y="418" font-size="14" font-weight="600" fill="var(--text)">3 · PAG</text>
+          <text x="40" y="434" class="mono" font-size="10" fill="var(--muted)">scrat-1…:4443</text>
+          <text x="40" y="447" font-size="9.5" fill="var(--muted)">API S3 (boto3)</text>
+
+          <g transform="translate(254,404)">
+            <rect width="210" height="46" rx="8" fill="var(--surface)" stroke="var(--border)"></rect>
+            <text x="10" y="18" class="mono" font-size="11"><tspan fill="var(--get)" font-weight="600">GET</tspan><tspan fill="var(--text)"> ?lifecycle</tspan></text>
+            <text x="10" y="33" font-size="9.5" fill="var(--muted)">lit les règles existantes</text>
+          </g>
+          <g transform="translate(476,404)">
+            <rect width="210" height="46" rx="8" fill="var(--surface)" stroke="var(--write)" stroke-dasharray="3 3"></rect>
+            <text x="10" y="18" class="mono" font-size="11"><tspan fill="var(--write)" font-weight="600">PUT</tspan><tspan fill="var(--text)"> ?lifecycle</tspan></text>
+            <text x="10" y="33" font-size="9.5" fill="var(--muted)">applique pag.lifecycle — si différent*</text>
+          </g>
+        </g>
+
+        <line x1="480" y1="472" x2="480" y2="490" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)" opacity="0.55"></line>
+
+        <!-- Lane 4: PDR -->
+        <g>
+          <rect x="24" y="492" width="912" height="110" rx="12" fill="var(--surface)" stroke="var(--border)"></rect>
+          <line x1="234" y1="506" x2="234" y2="588" stroke="var(--border)"></line>
+          <text x="40" y="534" font-size="14" font-weight="600" fill="var(--text)">4 · PDR</text>
+          <text x="40" y="550" class="mono" font-size="10" fill="var(--muted)">hathor-1…:3601</text>
+          <text x="40" y="563" font-size="9.5" fill="var(--muted)">Administration API</text>
+
+          <g transform="translate(254,524)">
+            <rect width="210" height="46" rx="8" fill="var(--surface)" stroke="var(--border)"></rect>
+            <text x="10" y="18" class="mono" font-size="11"><tspan fill="var(--get)" font-weight="600">GET</tspan><tspan fill="var(--text)"> /api/tasks</tspan></text>
+            <text x="10" y="33" font-size="9.5" fill="var(--muted)">cherche la tâche (alias)</text>
+          </g>
+          <g transform="translate(476,524)">
+            <rect width="210" height="46" rx="8" fill="var(--surface)" stroke="var(--write)" stroke-dasharray="3 3"></rect>
+            <text x="10" y="18" class="mono" font-size="11"><tspan fill="var(--write)" font-weight="600">POST</tspan><tspan fill="var(--text)">/</tspan><tspan fill="var(--write)" font-weight="600">PATCH</tspan><tspan fill="var(--text)"> /api/tasks</tspan></text>
+            <text x="10" y="33" font-size="9.5" fill="var(--muted)">crée ou met à jour — si besoin*</text>
+          </g>
+          <g transform="translate(698,524)">
+            <rect width="210" height="46" rx="8" fill="var(--surface)" stroke="var(--write)" stroke-dasharray="3 3"></rect>
+            <text x="10" y="18" class="mono" font-size="11"><tspan fill="var(--write)" font-weight="600">POST</tspan><tspan fill="var(--text)"> /jobs</tspan></text>
+            <text x="10" y="33" font-size="9.5" fill="var(--muted)">lance la copie initiale — si créée*</text>
+          </g>
+        </g>
+      </svg>
+      </div>
+      <figcaption>Quatre systèmes, dans l'ordre : COS (ACL/firewall/notifications) → PAG API d'administration (partition + repository) → PAG API S3 (cycle de vie) → PDR (tâche de réplication + job initial). Les appels en trait plein sont toujours exécutés (lecture) ; les appels en pointillé ne sont envoyés que si l'état réel diffère de la config — sinon l'étape ressort <code>SKIPPED</code>.</figcaption>
+    </figure>
+
+    <div class="legend-row">
+      <span><span class="swatch" style="background:var(--get)"></span>Lecture (GET) — toujours exécutée</span>
+      <span><span class="swatch" style="background:var(--write); border:1px dashed var(--write)"></span>Écriture (POST/PATCH/PUT) — seulement si un changement est nécessaire</span>
+    </div>
+  </section>
+
+  <section id="api">
+    <h2><span class="num">03</span>Référence API par système</h2>
+    <p>Le détail des appels effectués par <code>cos2pag</code>, groupés par système externe. « Cond. » indique si l'appel n'est envoyé que sous condition (sinon l'étape est ignorée).</p>
+
+    <div class="device-grid">
+      <div class="device">
+        <div class="device-head">
+          <h3>COS <span class="badge">cos.*</span></h3>
+          <span class="host">osiris-109-a-fe.ctie.etat.lu:8338 · Service API</span>
+        </div>
+        <div class="table-wrap">
+          <table class="api">
+            <thead><tr><th>Méthode</th><th>Chemin</th><th>Description</th><th>Cond.</th></tr></thead>
+            <tbody>
+              <tr><td class="verb get">GET</td><td class="path">/container/{bucket}</td><td class="desc">Lit l'ACL, le firewall, les notifications et <code>time_updated</code> du bucket.</td><td class="cond">—</td></tr>
+              <tr><td class="verb write">PATCH</td><td class="path">/container/{bucket}</td><td class="desc">Ajoute le compte de sauvegarde à l'ACL et l'IP de PDR au firewall.</td><td class="cond">Si l'ACL ou le firewall diffère</td></tr>
+              <tr><td class="verb write">PATCH</td><td class="path">/container/{bucket}</td><td class="desc">Définit <code>notifications.topic</code> au nom du bucket.</td><td class="cond">Si le topic n'est pas déjà correct</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="device">
+        <div class="device-head">
+          <h3>PAG <span class="badge">pag.*</span></h3>
+          <span class="host">scrat-1.ctie.etat.lu:4200 · Administration API</span>
+        </div>
+        <div class="table-wrap">
+          <table class="api">
+            <thead><tr><th>Méthode</th><th>Chemin</th><th>Description</th><th>Cond.</th></tr></thead>
+            <tbody>
+              <tr><td class="verb get">GET</td><td class="path">/api/partitions</td><td class="desc">Liste les partitions pour trouver celle du tenant (<code>--tenant</code>).</td><td class="cond">—</td></tr>
+              <tr><td class="verb write">POST</td><td class="path">/api/partitions</td><td class="desc">Crée la partition avec <code>pag.new_partition_defaults</code>.</td><td class="cond">Si le tenant n'existe pas encore</td></tr>
+              <tr><td class="verb get">GET</td><td class="path">/api/partitions/{uuid}/pst_buffer_config</td><td class="desc">Lit la configuration du buffer persistant.</td><td class="cond">Si <code>pag.persistent_buffer</code> configuré</td></tr>
+              <tr><td class="verb write">PUT</td><td class="path">/api/partitions/{uuid}/pst_buffer_config</td><td class="desc">Applique la configuration du buffer persistant.</td><td class="cond">Si différente de l'existante</td></tr>
+              <tr><td class="verb get">GET</td><td class="path">/api/partitions/{uuid}/repositories</td><td class="desc">Liste les repositories pour trouver celui du bucket.</td><td class="cond">—</td></tr>
+              <tr><td class="verb write">POST</td><td class="path">/api/partitions/{uuid}/repositories</td><td class="desc">Crée le repository (owner, versioning, hidden, write-protected).</td><td class="cond">Si le repository n'existe pas</td></tr>
+              <tr><td class="verb write">PATCH</td><td class="path">/api/partitions/{uuid}/repositories/{uuid}</td><td class="desc">Met à jour le repository existant.</td><td class="cond">Si owner/versioning/flags diffèrent</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="device">
+        <div class="device-head">
+          <h3>PAG (S3) <span class="badge">pag.lifecycle</span></h3>
+          <span class="host">scrat-1.ctie.etat.lu:4443 · API S3 standard (boto3)</span>
+        </div>
+        <div class="table-wrap">
+          <table class="api">
+            <thead><tr><th>Méthode</th><th>Chemin</th><th>Description</th><th>Cond.</th></tr></thead>
+            <tbody>
+              <tr><td class="verb get">GET</td><td class="path">?lifecycle</td><td class="desc"><code>GetBucketLifecycleConfiguration</code> — lit les règles existantes.</td><td class="cond">—</td></tr>
+              <tr><td class="verb write">PUT</td><td class="path">?lifecycle</td><td class="desc"><code>PutBucketLifecycleConfiguration</code> — remplace intégralement les règles avec <code>pag.lifecycle</code>.</td><td class="cond">Si au moins une règle diffère</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="device">
+        <div class="device-head">
+          <h3>PDR <span class="badge">pdr.*</span></h3>
+          <span class="host">hathor-1.ctie.etat.lu:3601 · Administration API</span>
+        </div>
+        <div class="table-wrap">
+          <table class="api">
+            <thead><tr><th>Méthode</th><th>Chemin</th><th>Description</th><th>Cond.</th></tr></thead>
+            <tbody>
+              <tr><td class="verb get">GET</td><td class="path">/api/tasks</td><td class="desc">Liste les tâches pour trouver celle dont l'alias = nom du bucket.</td><td class="cond">—</td></tr>
+              <tr><td class="verb write">POST</td><td class="path">/api/tasks</td><td class="desc">Crée la tâche (source/cible S3, options, planning, notifications).</td><td class="cond">Si la tâche n'existe pas</td></tr>
+              <tr><td class="verb write">PATCH</td><td class="path">/api/tasks/{id}</td><td class="desc">Met à jour la tâche existante.</td><td class="cond">Si options/planning/notifications diffèrent</td></tr>
+              <tr><td class="verb write">POST</td><td class="path">/api/tasks/{id}/jobs</td><td class="desc">Lance un job <code>Copy</code> initial pour copier les objets déjà présents.</td><td class="cond">Si tâche vient d'être créée et <code>pdr.auto_start_job</code> ≠ false</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer class="note">
+    Config : <code>config.yaml</code> (copié depuis <code>config.example.yaml</code>) + secrets dans <code>.env</code>. Exécution : <code>python -m cos2pag &lt;bucket&gt; --tenant &lt;tenant&gt; [--dry-run] [-v]</code>. Détails complets dans le <code>README.md</code> du repo.
+  </footer>
+</main>
