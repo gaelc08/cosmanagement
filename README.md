@@ -48,20 +48,23 @@ directory; silently skipped if absent), with `override=True` -- so a corrected `
 wins over a stale variable left exported in your shell from earlier manual testing.
 
 ## Configuration
-`config.json` holds the settings, split by who uses them (see `config.example.json`):
+The settings are split by who uses them:
 
-- **General** (the web UI and everything else): `api` (base URL and SSL of the COS management API; `ssl_verify` and `ca_bundle_path` for a self-signed or custom certificate), `s3` (the S3 endpoint of COS, for the lifecycle rules), `cos2pag` (paths of the replication's `config.yaml` and `.env`), and the optional `tenants` and `storage_location_labels`.
-- **Hive only**, under the `"hive"` key, used by `hive_management.py` and by the *Generate from the Hive settings of config.json* button of the bulk creation, and by nothing else:
+- **`config.json`** (general, see `config.example.json`): `api` (base URL and SSL of the COS management API; `ssl_verify` and `ca_bundle_path` for a self-signed or custom certificate), `s3` (the S3 endpoint of COS, for the lifecycle rules), `cos2pag` (paths of the replication's `config.yaml` and `.env`), and the optional `tenants` and `storage_location_labels`.
+- **`hive.json`** (Hive only, see `hive.example.json`), used by `hive_management.py` and by the *Generate from the Hive settings* button of the bulk creation, and by nothing else:
   1. `buckets`: the buckets with their storage account (`sa`), name and quota for each environment;
   2. `environments`: the environments (dev, tst, qa, prd);
   3. `storage_locations`: the storage location of each environment;
   4. `firewall_rules`: the allowed IPs of each environment.
 
-A `config.json` from before the `"hive"` key existed, with these four keys at the top level, still works as long as there is no `"hive"` key. To migrate it, move the four keys under `"hive"`; with `jq`:
+  It is read from `hive.json` next to `config.json` when that file exists, or from `--hive-config PATH` (an explicit path must exist). Like `config.json`, it is not committed (`.gitignore`).
+
+A `config.json` that still carries these four keys itself (at the top level, or under a `"hive"` key) keeps working while there is no `hive.json`; `hive.json` wins when both exist. To split an existing file:
 ```bash
-jq '{api, s3, cos2pag, tenants, storage_location_labels} + {hive: {buckets, environments, storage_locations, firewall_rules}} | del(..|nulls)' config.json > config.new.json
+jq '{buckets, environments, storage_locations, firewall_rules}' config.json > hive.json
+jq 'del(.buckets, .environments, .storage_locations, .firewall_rules)' config.json > config.new.json   # check it, then replace config.json
 ```
-(check the result, then replace `config.json`; keep any other key you added by hand, since the command above only copies the ones it names). The Hive storage locations are no longer offered as suggestions in the web UI's forms; the suggestions come from `storage_locations.txt` and from `tenants`.
+The Hive storage locations are not offered as suggestions in the web UI's forms; the suggestions come from `storage_locations.txt` and from `tenants`.
 
 ### SSL Configuration
 If the IBM COS API uses a self-signed or custom certificate, you need to:

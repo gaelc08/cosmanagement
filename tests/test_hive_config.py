@@ -29,3 +29,34 @@ def test_the_hive_key_wins_over_top_level_keys():
 
 def test_no_hive_settings_at_all():
     assert hm.hive_config({'api': {}}) == {}
+
+
+def write(path, data):
+    path.write_text(__import__('json').dumps(data), encoding='utf-8')
+
+
+def test_load_config_reads_hive_json_next_to_config_json(tmp_path):
+    write(tmp_path / 'config.json', {'api': {'base_url': 'https://x'}})
+    write(tmp_path / 'hive.json', HIVE)
+    config = hm.load_config(str(tmp_path / 'config.json'))
+    assert hm.hive_config(config) == HIVE and 'buckets' not in config
+
+
+def test_hive_json_is_optional_by_default(tmp_path):
+    write(tmp_path / 'config.json', {'api': {}, **HIVE})
+    assert hm.hive_config(hm.load_config(str(tmp_path / 'config.json'))) == HIVE      # older config.json
+
+
+def test_hive_json_wins_over_the_hive_settings_in_config_json(tmp_path):
+    write(tmp_path / 'config.json', {'api': {}, 'hive': {'environments': ['prd']}})
+    write(tmp_path / 'hive.json', HIVE)
+    assert hm.hive_config(hm.load_config(str(tmp_path / 'config.json')))['environments'] == ['dev']
+
+
+def test_an_explicit_hive_path_must_exist(tmp_path):
+    import pytest
+    write(tmp_path / 'config.json', {'api': {}})
+    with pytest.raises(SystemExit):
+        hm.load_config(str(tmp_path / 'config.json'), str(tmp_path / 'missing.json'))
+    write(tmp_path / 'other.json', HIVE)
+    assert hm.hive_config(hm.load_config(str(tmp_path / 'config.json'), str(tmp_path / 'other.json'))) == HIVE

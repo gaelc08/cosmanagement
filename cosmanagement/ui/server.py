@@ -247,6 +247,7 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     parser = argparse.ArgumentParser(description='Local web UI to manage IBM COS accounts, buckets and credentials')
     parser.add_argument('--config', default='config.json', help='Path to config.json')
+    hm.add_hive_argument(parser)
     parser.add_argument('--env-file', default='.env', help='Path to a .env file with the credentials')
     parser.add_argument('--locations', default='storage_locations.txt',
                         help='Optional local list of storage locations (container vaults), one per line; '
@@ -259,7 +260,7 @@ def main():
     args = parser.parse_args()
 
     load_dotenv(args.env_file, override=True)
-    Handler.config = hm.load_config(args.config)
+    Handler.config = hm.load_config(args.config, args.hive_config)
     Handler.locations = load_locations(args.locations)
     if Handler.locations:
         print(f'{len(Handler.locations)} storage location(s) read from {args.locations}')

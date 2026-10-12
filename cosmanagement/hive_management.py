@@ -43,18 +43,43 @@ DEFAULT_HEADERS = {
 }
 
 
-def load_config(path='config.json'):
-    """Load configuration from config.json file (no secrets in here)."""
+def _read_json(path, hint):
     try:
         with open(path, 'r') as f:
-            config = json.load(f)
-        return config
+            data = json.load(f)
     except FileNotFoundError:
-        print(f"Error: {path} not found. Copy config.example.json to {path} and adjust it.")
+        print(f"Error: {path} not found. {hint}")
         sys.exit(1)
     except json.JSONDecodeError as err:
         print(f"Error: invalid JSON in {path}: {err}")
         sys.exit(1)
+    if not isinstance(data, dict):
+        print(f"Error: {path} must contain a JSON object.")
+        sys.exit(1)
+    return data
+
+
+def load_config(path='config.json', hive_path=None):
+    """Load config.json (no secrets in here) and, when there is one, the Hive settings file.
+
+    The Hive settings (buckets, environments, storage_locations, firewall_rules) are read from `hive_path`; by
+    default from hive.json next to config.json, which may be absent. A `hive_path` given explicitly must exist.
+    A file that is read is what hive_config() returns.
+    """
+    config = _read_json(path, f"Copy config.example.json to {path} and adjust it.")
+    explicit = hive_path is not None
+    hive_path = hive_path or os.path.join(os.path.dirname(os.path.abspath(path)), 'hive.json')
+    if explicit or os.path.exists(hive_path):
+        config['hive'] = _read_json(hive_path, 'Copy hive.example.json to hive.json and adjust it.')
+    return config
+
+
+def add_hive_argument(parser):
+    parser.add_argument(
+        '--hive-config', default=None, metavar='PATH',
+        help='Path to the Hive settings (buckets, environments, storage_locations, firewall_rules). '
+             'Default: hive.json next to config.json, if it exists.',
+    )
 
 
 HIVE_KEYS = ('buckets', 'environments', 'storage_locations', 'firewall_rules')
@@ -63,8 +88,8 @@ HIVE_KEYS = ('buckets', 'environments', 'storage_locations', 'firewall_rules')
 def hive_config(config):
     """The settings only the Hive tools use (buckets, environments, storage_locations, firewall_rules).
 
-    They live under config.json's "hive" key. A config.json from before that key existed has them at the top
-    level, which is still read when there is no "hive" key.
+    load_config() puts them under config["hive"], read from hive.json. A config.json that carries them itself,
+    under a "hive" key or (from before that existed) at the top level, is still read when there is no hive.json.
     """
     section = config.get('hive')
     return section if isinstance(section, dict) else {key: config[key] for key in HIVE_KEYS if key in config}
@@ -631,6 +656,7 @@ def main():
         ),
     )
     parser.add_argument('--config', type=str, default='config.json', help='Path to config.json')
+    add_hive_argument(parser)
     parser.add_argument(
         '--env-file', type=str, default='.env',
         help='Path to a .env file with HIVE_USERNAME/HIVE_PASSWORD (or HIVE_AUTH_TOKEN). '
@@ -650,7 +676,7 @@ def main():
     # earlier manual testing) must not shadow a since-corrected .env value.
     load_dotenv(args.env_file, override=True)
 
-    config = load_config(args.config)
+    config = load_config(args.config, args.hive_config)
 
     if args.action == 'create_all':
         print("Creating storage accounts...")
