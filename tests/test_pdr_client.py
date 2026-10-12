@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock
 
-from cos2pag.pdr_client import PdrClient
+from cosmanagement.cos2pag.pdr_client import PdrClient
 
 ALIAS = "my-bucket"
 

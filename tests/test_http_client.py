@@ -1,4 +1,4 @@
-from cos2pag.http_client import ApiError, redact_secrets, request_json
+from cosmanagement.cos2pag.http_client import ApiError, redact_secrets, request_json
 
 
 class FakeResponse:

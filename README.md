@@ -72,6 +72,24 @@ If the IBM COS API uses a self-signed or custom certificate, you need to:
      "ca_bundle_path": "/path/to/osiris-ca.pem"
      ```
 
+## Repository layout
+```
+cos_ui.py, hive_management.py   thin launchers (python cos_ui.py / python hive_management.py ...)
+cosmanagement/
+  hive_management.py            Hive API client and command line (storage accounts, buckets, credentials)
+  cos2pag/                      COS -> PAG replication setup through PDR (its own docs: docs/cos2pag.md)
+    teardown.py                 suspend / undo a replication
+  ui/                           the web UI
+    server.py                   HTTP server, routes, command line
+    search.py buckets.py bulk.py replication.py common.py   the API behind each tab
+    static/                     index.html, style.css, js/*.js (loaded in the order listed in index.html)
+tests/                          pytest (cos2pag, UI search / server / replication)
+docs/cos2pag.md                 cos2pag documentation
+cos2pag.example.yaml, cos2pag.env.example   configuration templates for the replication
+pyproject.toml                  packaging (pip install . gives cos-ui, cos2pag and hive-management commands)
+```
+`cos2pag` used to be a separate repository (`gaelc08/cos2pag`); it now lives here, with its history, and the web UI calls it directly.
+
 ## Usage
 1. Clone the repository or download the script.
 2. Install the required dependencies:
@@ -121,9 +139,9 @@ In the bucket-creation form, the locations of the account's tenant appear as but
 
 - **Search**: pick what you search by (**Tenant**, **Storage account** or **Bucket**) and type a full name or a pattern with `*` (`fina`, `fi*`, `*-0001`, `*docs*`; case-insensitive). A tenant is matched exactly (`sa-act-0001` belongs to `act`, `sa-act-geoportal-0001` to `act-geoportal`); the `sa-` prefix may be left out for an account. A full bucket name costs a single `GET /container/<name>` (its owner account is read from `service_instance`); a bucket pattern lists every account, one API call per account. Results are grouped by account and show, for every bucket, its **object count**, **size used**, **quota** and **percentage of quota** (with a bar, orange from 80 %, red at 100 %), straight from the bucket listing (`GET /accounts/<id>/containers`: `hard_quota`, `bytes_used`, `object_count`...), so there is no extra call. **List tenants** lists the tenants (read from `storage_locations.txt` or `config.json` with no API call, else from a single `GET /accounts`); tick one or several (with a filter box and *Tick all*) and click **Show the buckets**. You can also type several tenants separated by commas (`fina,act`). A filter box, **Copy displayed buckets**, **Export as CSV** (semicolon-separated, UTF-8 with a BOM so Excel opens it, exact values in bytes) and **Print** work on the displayed results. **View** shows a bucket's details (usage summary first, then storage location, creation date, versioning, lifecycle, replication, object lock..., the firewall IPs from a `GET /container/<name>`, and the raw responses). Each account has **Get the credentials** and **Generate new credentials**.
 - **Edit**: **Edit** on a result opens this tab for that bucket: its usage summary, then quota and allowed IPs (shown as the API returns them; only the fields you change are sent, as a `PATCH`; the storage location is not changed), **Replicate to PAG**, the account's credentials and **Delete the bucket** (irreversible, you must type the bucket name).
-- **Replicate to PAG** (button on every bucket): sets up the replication of the bucket to a PoINT Archival Gateway repository by calling the `cos2pag` tool (separate repository), which does the whole job and is idempotent: COS (ACL, IP whitelist, notifications of the bucket), PAG (the tenant's partition, the repository, persistent buffer, lifecycle) and PDR (the replication task and its first copy job). Nothing is reimplemented here: `cos2pag` keeps its own `config.yaml`, its secrets in its `.env`, and its logic. To enable it, install it in the same Python environment (`pip install <folder of cos2pag>`) and point `config.json` at its files:
+- **Replicate to PAG** (button on every bucket): sets up the replication of the bucket to a PoINT Archival Gateway repository by calling the `cos2pag` package (in this repository, `cosmanagement/cos2pag/`), which does the whole job and is idempotent: COS (ACL, IP whitelist, notifications of the bucket), PAG (the tenant's partition, the repository, persistent buffer, lifecycle) and PDR (the replication task and its first copy job). Nothing is reimplemented here: `cos2pag` keeps its own `config.yaml`, its secrets in its `.env`, and its logic. It is installed with the other dependencies (`pip install -r requirements.txt`); copy `cos2pag.example.yaml` to `config.yaml` and `cos2pag.env.example` to `.env`, fill them in, and point `config.json` at them:
   ```json
-  "cos2pag": {"config": "/path/to/cos2pag/config.yaml", "env_file": "/path/to/cos2pag/.env"}
+  "cos2pag": {"config": "/path/to/config.yaml", "env_file": "/path/to/cos2pag.env"}
   ```
   (`env_file` is optional; relative paths are relative to where you start `cos_ui.py`). The panel asks for the PAG tenant, which names the partition (one per tenant). `cos2pag` never guesses it, because several real tenants share a prefix (`ME`, `ME-SR`, `ME-SRE`...). The panel reads the partitions that exist on PAG, offers their names in the field, and says what will happen: the partition exists and will be used, **or** it does not exist and `cos2pag` will create it with the `new_partition_defaults` of its `config.yaml`. The field starts from the tenant of the account (`fina`), replaced by the partition that really exists when there is one (whatever its case).
 
@@ -131,7 +149,7 @@ In the bucket-creation form, the locations of the account's tenant appear as but
 
   **Partition names and case.** `cos2pag` looks a partition up by *exact* name, case included, while PAG refuses to create a partition whose name differs from an existing one only by case (`'CreatePartition()' failed because the partition does already exist`). So when the tenant is not an exact partition name but one exists that differs only by case, the request is **refused before `cos2pag` runs**, with the exact name to use (and a button that puts it in the field). The same check protects the deletion of a PAG repository: a wrong case never makes it silently skip or hit the wrong partition. A tenant that resembles no existing partition is left to `cos2pag`, which creates it. **Simulate** is `cos2pag --dry-run`: it reads the current state and lists each step as *To do* or *Already in place*, sending nothing. **Run** is only unlocked after a successful simulation for the same tenant, asks for confirmation, and shows each step as done. `cos2pag`'s log is under "API call details". Run the simulation again to see what is still to do, or to check a bucket that is already replicated. When the panel opens it also reads the **current state** (read-only: the PDR task whose alias is the bucket name, its schedule, and the noncurrent-version retention found in the lifecycle rules of the PAG repository). The **Retention (days)** field is `cos2pag --noncurrent-expiration-days`: it is prefilled with the current value, and leaving it empty keeps whatever `pag.lifecycle` says in cos2pag's `config.yaml`. **Editing a replication is the same action with a new value**: `cos2pag` is idempotent and updates what differs (the lifecycle rule on PAG, the PDR task's options, schedule and notifications), so change the retention, simulate, and the steps that would change show as *To do*. Changing the tenant or the retention locks **Run** until you simulate again.
 
-  **Suspend or undo** (same panel; `pag_teardown.py`, which reuses cos2pag's own clients and configuration). `cos2pag` only creates, so undoing means reversing what it did, in the reverse order of its pipeline (PDR, then PAG, then COS). Three levels:
+  **Suspend or undo** (same panel; `cosmanagement/cos2pag/teardown.py`, which reuses cos2pag's own clients and configuration). `cos2pag` only creates, so undoing means reversing what it did, in the reverse order of its pipeline (PDR, then PAG, then COS). Three levels:
   - **Suspend the task in PDR**: disables the schedule and the notifications of the PDR task (`PATCH /api/tasks/{id}`), deleting nothing. Reversible: **Run** in the replication part above runs `cos2pag` again, whose `ensure_task` sees the difference and re-enables them.
   - **Undo everything, keep the PAG repository**: deletes the PDR task (`DELETE /api/tasks/{id}`) and takes back from the COS bucket what `cos2pag` added: the backup service account's ACL grant (only that exact grant; the rest of the ACL is re-sent as it was) and the PDR IP in the firewall whitelist. The PAG repository, its data and its lifecycle rules are kept.
   - **Undo everything, including the PAG repository**: the same, plus deletion of the PAG repository (`DELETE /api/partitions/{partition}/repositories/{repository}`), so the archived copies are lost. **Irreversible.** It needs the tenant, which names the partition and is never guessed.
@@ -183,6 +201,6 @@ This script is provided as-is. Ensure compliance with your organization's polici
 
 ## Extending the Script
 To extend the script for additional functionality:
-1. Add new functions to the `hive_management.py` script.
+1. Add new functions to `cosmanagement/hive_management.py`.
 2. Update the `config.json` file with any new configurations.
 3. Add new actions to the `argparse` section in the `main` function.

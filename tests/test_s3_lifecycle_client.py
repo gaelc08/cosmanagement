@@ -2,7 +2,7 @@ from unittest.mock import MagicMock
 
 from botocore.exceptions import ClientError
 
-from cos2pag.s3_lifecycle_client import build_lifecycle_rules, ensure_bucket_lifecycle, get_bucket_lifecycle
+from cosmanagement.cos2pag.s3_lifecycle_client import build_lifecycle_rules, ensure_bucket_lifecycle, get_bucket_lifecycle
 
 BUCKET = "my-bucket"
 

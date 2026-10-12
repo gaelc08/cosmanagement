@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from cos2pag import cli
+from cosmanagement.cos2pag import cli
 
 
 def test_tenant_argument_is_required():

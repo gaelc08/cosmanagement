@@ -25,7 +25,7 @@ The calls cos2pag does not make are assumptions to check against the products' A
   DELETE /api/partitions/{partitionUuid}/repositories/{repositoryUuid}           (PAG)
 Their status and body are returned when they fail.
 
-Uses cos2pag's own clients (an optional dependency), so it shares its configuration and secrets.
+Uses cos2pag's own clients, so it shares its configuration and secrets.
 """
 
 import types
@@ -34,15 +34,12 @@ LEVELS = ('suspend', 'undo', 'purge')
 
 
 def load_modules():
-    """The cos2pag pieces used here, or None when the package is not installed."""
-    try:
-        from cos2pag.config import AuthConfig
-        from cos2pag.cos_client import CosClient, acl_map_to_pairs
-        from cos2pag.http_client import build_session, request_json
-        from cos2pag.pag_client import PagClient
-        from cos2pag.pdr_client import PdrClient
-    except ImportError:
-        return None
+    """The cos2pag pieces used here, gathered in one namespace."""
+    from .config import AuthConfig
+    from .cos_client import CosClient, acl_map_to_pairs
+    from .http_client import build_session, request_json
+    from .pag_client import PagClient
+    from .pdr_client import PdrClient
     return types.SimpleNamespace(
         AuthConfig=AuthConfig, CosClient=CosClient, acl_map_to_pairs=acl_map_to_pairs, build_session=build_session,
         request_json=request_json, PagClient=PagClient, PdrClient=PdrClient,

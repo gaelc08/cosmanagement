@@ -92,27 +92,27 @@ cover this function" / `ModifyObjectRepository`).
 ## Install
 
 ```
-pip install .                     # installs a `cos2pag` command on PATH
+pip install .                     # installs a `cos2pag` command on PATH (and cos-ui, hive-management)
 # or, to run from the checkout without installing:
-pip install -r requirements.txt   # then use `python -m cos2pag`
+pip install -r requirements.txt   # then use `python -m cosmanagement.cos2pag`
 ```
 
 ## Configure
 
 ```
-cp config.example.yaml config.yaml
-cp .env.example .env
+cp cos2pag.example.yaml config.yaml
+cp cos2pag.env.example .env
 ```
 
 Edit `config.yaml` for anything environment-specific (endpoints,
 partition, owner, etc. — see below), and edit `.env` for secrets (never
 committed, listed in `.gitignore`). `config.yaml`'s `${VAR_NAME}`
 placeholders are resolved from the environment at load time, and
-`python -m cos2pag` loads `.env` into the environment automatically
+`python -m cosmanagement.cos2pag` loads `.env` into the environment automatically
 before that happens — no need to `export` anything by hand each time.
 Use `--env-file <path>` if you keep secrets somewhere other than `.env`.
 
-`config.example.yaml` is pre-filled with this environment's known
+`cos2pag.example.yaml` is pre-filled with this environment's known
 endpoints:
 
 | System | Admin/Service API endpoint | S3 data-plane endpoint | Auth |
@@ -130,7 +130,7 @@ mix them up.
 ## Run
 
 ```
-python -m cos2pag my-bucket-name --tenant CTIE-001 --config config.yaml
+python -m cosmanagement.cos2pag my-bucket-name --tenant CTIE-001 --config config.yaml
 ```
 
 `--tenant` is required (the PAG partition/tenant name) — it's never

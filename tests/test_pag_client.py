@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock
 
-from cos2pag.pag_client import PagClient
+from cosmanagement.cos2pag.pag_client import PagClient
 
 PARTITION_UUID = "part-uuid"
 BUCKET = "my-bucket"
@@ -177,7 +177,7 @@ def test_ensure_persistent_buffer_updates_when_differs(monkeypatch):
 
 
 def test_get_persistent_buffer_returns_none_on_404(monkeypatch):
-    from cos2pag.http_client import ApiError
+    from cosmanagement.cos2pag.http_client import ApiError
 
     client = PagClient.__new__(PagClient)
     client.session = MagicMock()
@@ -187,7 +187,7 @@ def test_get_persistent_buffer_returns_none_on_404(monkeypatch):
     def fake_request_json(*args, **kwargs):
         raise ApiError("GET", "https://pag.example.com/x", 404, "not found")
 
-    monkeypatch.setattr("cos2pag.pag_client.request_json", fake_request_json)
+    monkeypatch.setattr("cosmanagement.cos2pag.pag_client.request_json", fake_request_json)
 
     assert client.get_persistent_buffer(PARTITION_UUID) is None
 

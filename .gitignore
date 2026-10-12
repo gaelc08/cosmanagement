@@ -8,3 +8,10 @@ __pycache__/
 *.pyc
 buckets*.json
 storage_locations.txt
+config.yaml
+.pytest_cache/
+.venv/
+*.egg-info/
+build/
+dist/
+.ruff_cache/

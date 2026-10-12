@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>COS management</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main>
+  <h1>COS management</h1>
+  <nav id="tabs">
+    <button type="button" class="active" data-tab="search">Search</button>
+    <button type="button" data-tab="modify">Edit</button>
+    <button type="button" data-tab="create">Create</button>
+  </nav>
+  <div id="status"></div>
+  <div id="creds" class="panel" hidden></div>
+
+  <section id="tab-search">
+    <form id="search">
+      <select id="kind" aria-label="Search by">
+        <option value="tenant">Tenant</option>
+        <option value="account">Storage account</option>
+        <option value="bucket">Bucket</option>
+      </select>
+      <input type="text" id="query" placeholder="full name or with *" autocomplete="off" autofocus required
+             maxlength="2000" pattern="[A-Za-z0-9._*,\-]+" list="tenants-datalist">
+      <button type="submit" id="go">Search</button>
+      <button type="button" class="secondary" id="tenants-go">List tenants</button>
+    </form>
+    <datalist id="tenants-datalist"></datalist>
+    <p class="empty" id="search-help"></p>
+    <div id="tenants-panel" class="panel" hidden></div>
+    <div class="toolbar" id="toolbar">
+      <input type="text" id="filter" placeholder="Filter the results..." autocomplete="off">
+      <button type="button" class="secondary" id="copy">Copy displayed buckets</button>
+      <button type="button" class="secondary" id="csv">Export as CSV</button>
+      <button type="button" class="secondary" id="print">Print</button>
+    </div>
+    <div id="bucket-panel" class="panel" hidden></div>
+    <div id="results"></div>
+  </section>
+
+  <section id="tab-modify" hidden>
+    <p class="empty" id="m-empty">No bucket selected: find it in "Search", then click "Edit".</p>
+    <div id="m-main" hidden>
+      <h2 id="m-title"></h2>
+      <div id="m-summary"></div>
+      <div class="row-buttons" id="m-actions"></div>
+      <div id="m-edit" class="panel"></div>
+      <div id="m-repl" class="panel" hidden></div>
+    </div>
+  </section>
+
+  <section id="tab-create" hidden>
+    <h3>Create a storage account</h3>
+    <form id="account-form" class="grid-form" autocomplete="off">
+      <label for="a-id">Account</label>
+      <input type="text" id="a-id" required maxlength="132" placeholder="ex. sa-fina-0001">
+      <small>sa-&lt;tenant&gt;-&lt;suffix&gt;</small>
+      <label for="a-meta">x-Account-Meta-name</label>
+      <input type="text" id="a-meta" placeholder="optional">
+      <div class="buttons"><button type="submit" id="a-go">Create the account</button></div>
+    </form>
+
+    <h3>Create a bucket</h3>
+    <form id="bucket-form" class="grid-form" autocomplete="off">
+      <label for="c-account">Account</label>
+      <input type="text" id="c-account" required list="accounts-list" maxlength="132" placeholder="ex. sa-fina-0001">
+      <datalist id="accounts-list"></datalist>
+      <label for="c-bucket">Bucket name</label>
+      <input type="text" id="c-bucket" required maxlength="63" placeholder="ex. fina-docs">
+      <small>3 to 63 characters: lowercase letters, digits, - and .</small>
+      <label for="c-quota">Quota (GB)</label>
+      <input type="text" id="c-quota" required inputmode="numeric" placeholder="ex. 60">
+      <label for="c-location">Storage location</label>
+      <input type="text" id="c-location" required list="locations-list" placeholder="ex. cv-dev-01">
+      <datalist id="locations-list"></datalist>
+      <div id="c-location-choices" class="chips"></div>
+      <label for="c-ips">Allowed IPs</label>
+      <textarea id="c-ips" rows="4" required placeholder="One IP (or CIDR) per line, or comma-separated"></textarea>
+      <label for="c-meta">x-Account-Meta-name</label>
+      <input type="text" id="c-meta" placeholder="optional">
+      <div class="buttons"><button type="submit" id="c-go">Create the bucket</button></div>
+    </form>
+
+    <details id="tab-bulk"><summary>Bulk creation (JSON file)</summary>
+    <p class="empty">Creates several accounts and buckets from a JSON configuration file. Load a file, paste its content, or
+    start from the example, then preview before running. Format: <code>defaults</code> (default values for the buckets),
+    <code>accounts</code> (accounts to create) and <code>buckets</code> (buckets to create).</p>
+    <div class="row-buttons">
+      <button type="button" class="secondary" id="b-load">Load a JSON file...</button>
+      <input type="file" id="b-file" accept=".json,application/json" hidden>
+      <button type="button" class="secondary" id="b-example">Insert an example</button>
+    </div>
+    <fieldset id="b-legacy" hidden><legend>Generate from config.json (hive_management.py format)</legend>
+      <div id="b-envs"></div>
+      <button type="button" class="secondary" id="b-expand">Generate the file</button>
+    </fieldset>
+    <textarea id="b-doc" rows="16" spellcheck="false" placeholder='{"accounts": [...], "buckets": [...]}'></textarea>
+    <fieldset><legend>Credentials for the accounts in the file</legend>
+      <label><input type="radio" name="b-creds" value="none" checked> none</label>
+      <label><input type="radio" name="b-creds" value="get"> fetch the existing one</label>
+      <label><input type="radio" name="b-creds" value="create"> generate a new one</label>
+    </fieldset>
+    <button type="button" id="b-preview">Preview</button>
+    <button type="button" id="b-run" disabled>Run the plan</button>
+    <div id="b-plan"></div>
+    <div id="b-result"></div>
+    </details>
+  </section>
+
+  <details id="logbox" hidden><summary>API call details</summary><pre id="log"></pre></details>
+</main>
+<script src="/static/js/core.js"></script>
+<script src="/static/js/format.js"></script>
+<script src="/static/js/creds.js"></script>
+<script src="/static/js/bucket.js"></script>
+<script src="/static/js/replication.js"></script>
+<script src="/static/js/search.js"></script>
+<script src="/static/js/tenants.js"></script>
+<script src="/static/js/create.js"></script>
+<script src="/static/js/bulk.js"></script>
+<script src="/static/js/main.js"></script>
+</body>
+</html>

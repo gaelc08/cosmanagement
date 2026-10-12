@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cosmanagement"
+dynamic = ["version"]
+description = "IBM COS management: Hive bucket tools, COS -> PAG replication setup (cos2pag) and a local web UI"
+requires-python = ">=3.9"
+dependencies = [
+    "requests>=2.31",
+    "PyYAML>=6.0",
+    "python-dotenv>=1.0",
+    "boto3>=1.34",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff>=0.15,<0.16"]
+
+[project.scripts]
+cos-ui = "cosmanagement.ui.server:main"
+cos2pag = "cosmanagement.cos2pag.cli:main"
+hive-management = "cosmanagement.hive_management:main"
+
+[tool.setuptools]
+packages = ["cosmanagement", "cosmanagement.cos2pag", "cosmanagement.ui"]
+
+[tool.setuptools.package-data]
+"cosmanagement.ui" = ["static/*", "static/js/*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "cosmanagement.cos2pag.__version__"}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py39"
+
+[tool.ruff.lint]
+# Pinned explicitly (ruff's default rule set changes between releases):
+# syntax errors, undefined/unused names and other likely bugs, no style rules.
+select = ["E4", "E7", "E9", "F"]

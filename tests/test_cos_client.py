@@ -1,4 +1,4 @@
-from cos2pag.cos_client import _to_http_date, acl_map_to_pairs, merge_acl, merge_allowed_ip
+from cosmanagement.cos2pag.cos_client import _to_http_date, acl_map_to_pairs, merge_acl, merge_allowed_ip
 
 
 def test_acl_map_to_pairs_expands_multiple_permissions():

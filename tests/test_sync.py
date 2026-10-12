@@ -2,10 +2,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from cos2pag import sync as sync_module
-from cos2pag.config import ConfigError
-from cos2pag.http_client import ApiError
-from cos2pag.sync import (
+from cosmanagement.cos2pag import sync as sync_module
+from cosmanagement.cos2pag.config import ConfigError
+from cosmanagement.cos2pag.http_client import ApiError
+from cosmanagement.cos2pag.sync import (
     _build_persistent_buffer_body,
     _duration_to_seconds,
     _size_to_bytes,

@@ -59,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
             noncurrent_expiration_days=args.noncurrent_expiration_days,
         )
     except (ConfigError, ApiError, LookupError) as exc:
-        logging.getLogger("cos2pag").error("%s", exc)
+        logging.getLogger(__name__.rpartition(".")[0]).error("%s", exc)
         return 1
 
     print(f"\nSummary for bucket '{args.bucket_name}':")

@@ -1,6 +1,6 @@
 import pytest
 
-from cos2pag.config import ConfigError, load_config
+from cosmanagement.cos2pag.config import ConfigError, load_config
 
 
 def test_load_config_interpolates_env_vars(tmp_path, monkeypatch):
