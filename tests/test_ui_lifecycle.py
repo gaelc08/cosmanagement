@@ -116,3 +116,9 @@ def test_missing_s3_section_is_reported(monkeypatch):
 
 def test_invalid_names_are_refused():
     assert handle_lifecycle_get({}, {'account': 'nope', 'bucket': 'b'})[0] == 400
+
+
+def test_an_ssl_error_says_which_setting_to_change():
+    from botocore.exceptions import SSLError
+    message = lifecycle._s3_error(SSLError(endpoint_url='https://s3.example.lu', error='self-signed certificate'))
+    assert 'ca_bundle_path' in message and 'self-signed certificate' in message

@@ -10,7 +10,7 @@ the bucket (the ones "Get the credentials" returns). config.json needs an "s3" s
 this page manages (ids below) are merged with the other rules of the bucket, which are kept as they are.
 """
 
-from botocore.exceptions import BotoCoreError, ClientError
+from botocore.exceptions import BotoCoreError, ClientError, SSLError
 
 from .. import hive_management as hm
 from ..cos2pag.s3_lifecycle_client import build_s3_client, get_bucket_lifecycle
@@ -142,6 +142,10 @@ def _s3_error(err):
     if isinstance(err, ClientError):
         error = err.response.get('Error', {})
         return f"S3 error {error.get('Code', '')}: {error.get('Message', '')}".strip()
+    if isinstance(err, SSLError):
+        return (f'{type(err).__name__}: {err}. The S3 endpoint\'s certificate is not trusted by the CA bundle in use (by default the '
+                'one of "api"): set "ca_bundle_path" in the "s3" section of config.json to the CA that signed it '
+                '(or "ssl_verify": false to skip the check, for a test only).')
     return f'{type(err).__name__}: {err}'
 
 
