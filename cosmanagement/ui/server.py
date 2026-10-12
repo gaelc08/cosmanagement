@@ -179,12 +179,10 @@ class Handler(BaseHTTPRequestHandler):
             self._static(url.path[len('/static/'):])
         elif url.path == '/api/info':
             by_tenant = tenant_locations(self.config)
-            legacy = self.config.get('storage_locations')
-            known = {v for v in legacy.values() if isinstance(v, str)} if isinstance(legacy, dict) else set()
-            known.update(name for names in by_tenant.values() for name in names)
+            known = {name for names in by_tenant.values() for name in names}
             known.update(self.locations)
             self._json(200, {
-                'environments': list(self.config.get('environments', [])),
+                'environments': list(hm.hive_config(self.config).get('environments', [])),
                 'storage_locations': sorted(known),
                 'tenants': by_tenant,
                 'labels': location_labels(self.config),

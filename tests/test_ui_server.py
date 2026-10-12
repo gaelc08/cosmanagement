@@ -54,3 +54,11 @@ def test_search_validates_its_input(server):
     assert status == 400 and 'Invalid name' in json.loads(body)['error']
     assert get(server + '/api/search?kind=nope&q=a')[0] == 400
     assert get(server + '/api/search?kind=tenant&q=**')[0] == 400
+
+
+def test_info_reads_hive_settings_from_the_hive_key_and_keeps_them_out_of_the_suggestions(server):
+    Handler.config = {'hive': {'environments': ['dev', 'tst'], 'storage_locations': {'dev': 'cv-ctie-hive-dev-01'}},
+                      'tenants': {'fina': {'storage_locations': ['cv-fina-01']}}}
+    info = json.loads(get(server + '/api/info')[2])
+    assert info['environments'] == ['dev', 'tst']
+    assert info['storage_locations'] == ['cv-fina-01']

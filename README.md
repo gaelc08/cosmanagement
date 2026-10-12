@@ -48,14 +48,20 @@ directory; silently skipped if absent), with `override=True` -- so a corrected `
 wins over a stale variable left exported in your shell from earlier manual testing.
 
 ## Configuration
-The script uses a `config.json` file to store all configurations. Modify this file to define:
+`config.json` holds the settings, split by who uses them (see `config.example.json`):
 
-1. **Buckets**: List of buckets with their storage accounts, names, and quotas for each environment.
-2. **Environments**: List of environments (e.g., dev, tst, qa, prd).
-3. **API Settings**: Base URL and headers for the IBM COS API.
-4. **Storage Locations**: Storage locations for each environment.
-5. **Firewall Rules**: Allowed IPs for each environment.
-6. **SSL Settings**: Configure SSL verification and optionally specify a custom CA bundle path if the API uses a self-signed or custom certificate.
+- **General** (the web UI and everything else): `api` (base URL and SSL of the COS management API; `ssl_verify` and `ca_bundle_path` for a self-signed or custom certificate), `s3` (the S3 endpoint of COS, for the lifecycle rules), `cos2pag` (paths of the replication's `config.yaml` and `.env`), and the optional `tenants` and `storage_location_labels`.
+- **Hive only**, under the `"hive"` key, used by `hive_management.py` and by the *Generate from the Hive settings of config.json* button of the bulk creation, and by nothing else:
+  1. `buckets`: the buckets with their storage account (`sa`), name and quota for each environment;
+  2. `environments`: the environments (dev, tst, qa, prd);
+  3. `storage_locations`: the storage location of each environment;
+  4. `firewall_rules`: the allowed IPs of each environment.
+
+A `config.json` from before the `"hive"` key existed, with these four keys at the top level, still works as long as there is no `"hive"` key. To migrate it, move the four keys under `"hive"`; with `jq`:
+```bash
+jq '{api, s3, cos2pag, tenants, storage_location_labels} + {hive: {buckets, environments, storage_locations, firewall_rules}} | del(..|nulls)' config.json > config.new.json
+```
+(check the result, then replace `config.json`; keep any other key you added by hand, since the command above only copies the ones it names). The Hive storage locations are no longer offered as suggestions in the web UI's forms; the suggestions come from `storage_locations.txt` and from `tenants`.
 
 ### SSL Configuration
 If the IBM COS API uses a self-signed or custom certificate, you need to:

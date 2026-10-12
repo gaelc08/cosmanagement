@@ -57,6 +57,19 @@ def load_config(path='config.json'):
         sys.exit(1)
 
 
+HIVE_KEYS = ('buckets', 'environments', 'storage_locations', 'firewall_rules')
+
+
+def hive_config(config):
+    """The settings only the Hive tools use (buckets, environments, storage_locations, firewall_rules).
+
+    They live under config.json's "hive" key. A config.json from before that key existed has them at the top
+    level, which is still read when there is no "hive" key.
+    """
+    section = config.get('hive')
+    return section if isinstance(section, dict) else {key: config[key] for key in HIVE_KEYS if key in config}
+
+
 def _basic_auth_header(username, password):
     token = base64.b64encode(f"{username}:{password}".encode('utf-8')).decode('ascii')
     return f"Basic {token}"
@@ -135,8 +148,8 @@ def get_ssl_verify(config):
 def _selected_envs(config, environments=None):
     """config's environments, in config order, optionally narrowed to `environments`."""
     if environments is None:
-        return list(config['environments'])
-    return [env for env in config['environments'] if env in environments]
+        return list(hive_config(config)['environments'])
+    return [env for env in hive_config(config)['environments'] if env in environments]
 
 
 def plan_storage_accounts(config, environments=None):
@@ -146,7 +159,7 @@ def plan_storage_accounts(config, environments=None):
     """
     items, seen = [], set()
     for env in _selected_envs(config, environments):
-        for bucket in config['buckets']:
+        for bucket in hive_config(config)['buckets']:
             account_id = f'sa-ctie-hive-{env}-{bucket["sa"]}'
             if account_id in seen:
                 continue
@@ -168,13 +181,13 @@ def plan_buckets(config, environments=None):
     """
     items, errors = [], []
     for env in _selected_envs(config, environments):
-        for bucket in config['buckets']:
+        for bucket in hive_config(config)['buckets']:
             quota_key = f'quota-{env}'
             if quota_key not in bucket:
                 errors.append(f"Error: quota for env '{env}' not defined for bucket '{bucket['bucket']}'.")
                 continue
-            location = config['storage_locations'].get(env)
-            allowed_ips = config['firewall_rules'].get(env)
+            location = hive_config(config)['storage_locations'].get(env)
+            allowed_ips = hive_config(config)['firewall_rules'].get(env)
             if location is None or allowed_ips is None:
                 errors.append(f"Error: storage location or firewall rules for env '{env}' not defined.")
                 continue
@@ -414,8 +427,8 @@ def _write_creds_file(bucket_name, env_to_creds, environments):
 def create_credentials(config):
     """Generate new credentials for buckets and export them (unified format)."""
     base_cred_url = f"{config['api']['base_url']}/credentials"
-    buckets = config['buckets']
-    environments = config['environments']
+    buckets = hive_config(config)['buckets']
+    environments = hive_config(config)['environments']
     ssl_verify = get_ssl_verify(config)
     headers = build_headers(config)
 
@@ -434,8 +447,8 @@ def create_credentials(config):
 def get_credentials(config):
     """Retrieve existing credentials for buckets and export them (unified format)."""
     base_cred_url = f"{config['api']['base_url']}/credentials/"
-    buckets = config['buckets']
-    environments = config['environments']
+    buckets = hive_config(config)['buckets']
+    environments = hive_config(config)['environments']
     ssl_verify = get_ssl_verify(config)
     headers = build_headers(config)
 

@@ -135,14 +135,14 @@ def handle_bulk_plan(config, body):
 
 
 def handle_bulk_expand(config, body):
-    """Expand config.json (hive_management.py format) into a bulk file."""
-    known = list(config.get('environments', []))
+    """Expand the Hive settings of config.json (hive_management.py format) into a bulk file."""
+    known = list(hm.hive_config(config).get('environments', []))
     envs = body.get('environments')
     if not isinstance(envs, list) or not envs or not all(isinstance(e, str) for e in envs):
         return 400, {'error': 'Choose at least one environment.'}
     unknown = [e for e in envs if e not in known]
     if unknown:
-        return 400, {'error': f"Environnement inconnu : {', '.join(unknown)[:64]}"}
+        return 400, {'error': f"Unknown environment: {', '.join(unknown)[:64]}"}
     accounts = hm.plan_storage_accounts(config, envs)
     buckets, warnings = hm.plan_buckets(config, envs)
     document = {
