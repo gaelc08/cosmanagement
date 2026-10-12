@@ -122,3 +122,9 @@ def test_an_ssl_error_says_which_setting_to_change():
     from botocore.exceptions import SSLError
     message = lifecycle._s3_error(SSLError(endpoint_url='https://s3.example.lu', error='self-signed certificate'))
     assert 'ca_bundle_path' in message and 'self-signed certificate' in message
+
+
+def test_a_missing_ca_bundle_is_named(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    client, error = lifecycle._client({'api': {'base_url': 'https://x'}, 's3': {'endpoint_url': 'https://s3', 'ca_bundle_path': './s3-ca.pem'}}, 'sa-a-0001')
+    assert client is None and str(tmp_path / 's3-ca.pem') in error and 'cos_ui.py was started' in error

@@ -10,6 +10,8 @@ the bucket (the ones "Get the credentials" returns). config.json needs an "s3" s
 this page manages (ids below) are merged with the other rules of the bucket, which are kept as they are.
 """
 
+import os
+
 from botocore.exceptions import BotoCoreError, ClientError, SSLError
 
 from .. import hive_management as hm
@@ -132,6 +134,10 @@ def _client(config, account):
     settings = s3_settings(config)
     if settings is None:
         return None, MSG_NO_S3
+    bundle = settings['verify_ssl']
+    if isinstance(bundle, str) and not os.path.isfile(bundle):
+        return None, (f'CA bundle not found: {os.path.abspath(bundle)}. A relative ca_bundle_path is resolved from the folder '
+                      'where cos_ui.py was started: fix "ca_bundle_path" in the "s3" (or "api") section of config.json.')
     cred = hm.fetch_credential_for(config, account)
     if not cred:
         return None, f'No credentials found for {account}: use "Get the credentials" or generate some first.'
