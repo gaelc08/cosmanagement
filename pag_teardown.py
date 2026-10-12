@@ -11,7 +11,7 @@ pipeline COS -> PAG -> PDR:
 Three levels:
 
   suspend   disable the schedule and the notifications of the PDR task. Nothing is deleted; running cos2pag
-            again on the bucket (the "Exécuter" of the replication panel) re-enables them.
+            again on the bucket (the "Run" of the replication panel) re-enables them.
   undo      delete the PDR task and take back from COS what cos2pag added (the ACL grant, the PDR IP).
             The PAG repository, its data and its lifecycle rules are kept.
   purge     undo, and also delete the PAG repository: the archived copies are lost.
@@ -80,11 +80,11 @@ def partition_conflict(names, tenant):
     """The error to show when `tenant` is not an exact partition name but an existing one differs only by case, else None."""
     found = resolve_partition(names, tenant)
     if found['match'] == 'case':
-        return (f"Une partition PAG existe sous le nom « {found['name']} » (casse différente de « {tenant} »). cos2pag compare les noms "
-                f"exactement : il tenterait de la recréer et PAG refuserait (« already exist »). Utilise exactement « {found['name']} ».")
+        return (f"A PAG partition exists under the name \"{found['name']}\" (different case from \"{tenant}\"). cos2pag compares names "
+                f"exactly: it would try to recreate it and PAG would refuse (\"already exist\"). Use exactly \"{found['name']}\".")
     if found['match'] == 'ambiguous':
-        return (f"Plusieurs partitions PAG ne diffèrent de « {tenant} » que par la casse : {', '.join(found['candidates'])}. "
-                'Choisis le nom exact.')
+        return (f"Several PAG partitions differ from \"{tenant}\" only by case: {', '.join(found['candidates'])}. "
+                'Choose the exact name.')
     return None
 
 
@@ -117,27 +117,27 @@ def teardown(mods, cfg, bucket, tenant, level, dry_run):
     def pdr_suspend():
         task = find_task()
         if task is None:
-            return 'SKIPPED', f"aucune tâche PDR pour le bucket '{bucket}'"
+            return 'SKIPPED', f"no PDR task for the bucket '{bucket}'"
         body = {}
         if (task.get('schedule') or {}).get('enabled'):
             body['schedule'] = {'enabled': False}
         if (task.get('notifications') or {}).get('enabled'):
             body['notifications'] = {'enabled': False}
         if not body:
-            return 'SKIPPED', f"tâche id={task['id']} déjà suspendue (planification et notifications désactivées)"
+            return 'SKIPPED', f"task id={task['id']} already suspended (schedule and notifications disabled)"
         pdr_client().update_task(task['id'], body)
-        return 'CHANGED', f"tâche id={task['id']} suspendue : {', '.join(sorted(body))} désactivé(es){suffix}"
+        return 'CHANGED', f"task id={task['id']} suspended: {', '.join(sorted(body))} disabled{suffix}"
 
     def pdr_delete():
         task = find_task()
         if task is None:
-            return 'SKIPPED', f"aucune tâche PDR pour le bucket '{bucket}'"
+            return 'SKIPPED', f"no PDR task for the bucket '{bucket}'"
         client = pdr_client()
         mods.request_json(client.session, 'DELETE', f"{client.base_url}/api/tasks/{task['id']}", timeout=client.timeout, dry_run=dry_run)
-        return 'CHANGED', f"tâche id={task['id']} supprimée{suffix}"
+        return 'CHANGED', f"task id={task['id']} deleted{suffix}"
 
     def pag_keep():
-        return 'SKIPPED', f"dépôt PAG '{bucket}' conservé, avec ses données et ses règles de cycle de vie"
+        return 'SKIPPED', f"PAG repository '{bucket}' kept, with its data and its lifecycle rules"
 
     def pag_delete():
         client = mods.PagClient(pag_cfg['base_url'], _session(mods, pag_cfg), timeout=pag_cfg.get('timeout', 30), dry_run=dry_run)
@@ -146,13 +146,13 @@ def teardown(mods, cfg, bucket, tenant, level, dry_run):
             raise PartitionNameError(conflict)
         partition = client.find_partition_optional(tenant)
         if partition is None:
-            return 'SKIPPED', f"partition PAG '{tenant}' introuvable : rien à supprimer"
+            return 'SKIPPED', f"PAG partition '{tenant}' not found: nothing to delete"
         repo = client.find_repository(partition['uuid'], bucket)
         if repo is None:
-            return 'SKIPPED', f"pas de dépôt '{bucket}' dans la partition '{tenant}'"
+            return 'SKIPPED', f"no repository '{bucket}' in the partition '{tenant}'"
         mods.request_json(client.session, 'DELETE', f"{client.base_url}/api/partitions/{partition['uuid']}/repositories/{repo['uuid']}",
                           timeout=client.timeout, dry_run=dry_run)
-        return 'CHANGED', f"dépôt '{bucket}' supprimé de la partition '{tenant}' (copies archivées perdues; la partition est conservée){suffix}"
+        return 'CHANGED', f"repository '{bucket}' deleted from the partition '{tenant}' (archived copies lost; the partition is kept){suffix}"
 
     def cos_client():
         return mods.CosClient(cos_cfg['base_url'], _session(mods, cos_cfg), timeout=cos_cfg.get('timeout', 30), dry_run=dry_run)
@@ -181,7 +181,7 @@ def teardown(mods, cfg, bucket, tenant, level, dry_run):
             if remaining:
                 ip_changed = True
             else:
-                ip_note = f" ; {pdr_ip} est la seule IP de la liste blanche : laissée, car une liste vide pourrait ouvrir le bucket à toutes les IP"
+                ip_note = f"; {pdr_ip} is the only IP in the whitelist: left in place, since an empty list could open the bucket to every IP"
 
         body = {}
         if acl_changed:
@@ -189,16 +189,16 @@ def teardown(mods, cfg, bucket, tenant, level, dry_run):
         if ip_changed:
             body['firewall'] = {'allowed_ip': [ip for ip in allowed if ip != pdr_ip]}
         if not body:
-            return 'SKIPPED', f'rien à retirer du bucket (ACL de {grantee}, IP {pdr_ip}){ip_note}'
+            return 'SKIPPED', f'nothing to remove from the bucket (ACL of {grantee}, IP {pdr_ip}){ip_note}'
         client.patch_bucket(bucket, body, if_unmodified_since=info.get('time_updated'))
-        return 'CHANGED', f'acl_retiree={acl_changed} ip_retiree={ip_changed}{ip_note}{suffix}'
+        return 'CHANGED', f'acl_removed={acl_changed} ip_removed={ip_changed}{ip_note}{suffix}'
 
     def cos_notifications():
         _, info = cos_bucket()
         topic = (info.get('notifications') or {}).get('topic')
         if topic == bucket:
-            return 'SKIPPED', f"topic '{topic}' laissé tel quel : sa valeur avant cos2pag n'est pas connue"
-        return 'SKIPPED', 'topic de notification non posé par cos2pag : rien à faire'
+            return 'SKIPPED', f"topic '{topic}' left as is: its value before cos2pag is unknown"
+        return 'SKIPPED', 'notification topic not set by cos2pag: nothing to do'
 
     plans = {
         'suspend': [('pdr.task', pdr_suspend)],
@@ -209,7 +209,7 @@ def teardown(mods, cfg, bucket, tenant, level, dry_run):
     steps, failed = [], False
     for name, action in plans[level]:
         if failed:
-            steps.append({'name': name, 'status': 'NOT_RUN', 'detail': 'non exécuté : une étape précédente a échoué'})
+            steps.append({'name': name, 'status': 'NOT_RUN', 'detail': 'not run: a previous step failed'})
             continue
         try:
             status, detail = action()
@@ -219,7 +219,7 @@ def teardown(mods, cfg, bucket, tenant, level, dry_run):
             steps.append({'name': name, 'status': 'FAILED', 'detail': str(err)})
             failed = True
         except Exception as err:  # keep the steps already done in the report instead of losing them
-            steps.append({'name': name, 'status': 'FAILED', 'detail': f'{type(err).__name__} : {err}'})
+            steps.append({'name': name, 'status': 'FAILED', 'detail': f'{type(err).__name__}: {err}'})
             failed = True
         else:
             steps.append({'name': name, 'status': status, 'detail': detail})

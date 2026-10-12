@@ -7,11 +7,11 @@ Usage:
     python cos_ui.py --port 9000 --no-browser
 
 Tabs:
-  Rechercher  by tenant, storage account or bucket, with a full name or a pattern using * (fina*, *-0001, *docs*).
+  Search      by tenant, storage account or bucket, with a full name or a pattern using * (fina*, *-0001, *docs*).
               Every bucket shows its object count and its usage against its quota right in the results.
-  Modifier    the bucket selected in the results: quota, allowed IPs, replication to PAG, deletion, and its
+  Edit        the bucket selected in the results: quota, allowed IPs, replication to PAG, deletion, and its
               account's credentials
-  Créer       one storage account or bucket from typed-in values, or many from a JSON file that you load or
+  Create      one storage account or bucket from typed-in values, or many from a JSON file that you load or
               paste in the page (format below), with a preview and a per-item result
 
 Bulk file format (every key is optional, `defaults` fill what a bucket omits):
@@ -69,7 +69,7 @@ MAX_RETENTION_DAYS = 36500
 MAX_BODY = 1024 * 1024
 CREATED = (201,)
 DONE = (200, 201, 202, 204)
-MSG_NO_CREDS = 'Identifiants introuvables (voir les détails).'
+MSG_NO_CREDS = 'Credentials not found (see the details).'
 BULK_KEYS = {'defaults', 'accounts', 'buckets'}
 DEFAULT_KEYS = {'storage_location', 'allowed_ips', 'quota_gb', 'account_meta_name'}
 BUCKET_KEYS = DEFAULT_KEYS | {'account', 'name'}
@@ -77,7 +77,7 @@ ACCOUNT_KEYS = {'id', 'account_meta_name'}
 _api_lock = threading.Lock()
 
 PAGE = r"""<!doctype html>
-<html lang="fr">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -178,40 +178,40 @@ PAGE = r"""<!doctype html>
 <main>
   <h1>COS management</h1>
   <nav id="tabs">
-    <button type="button" class="active" data-tab="search">Rechercher</button>
-    <button type="button" data-tab="modify">Modifier</button>
-    <button type="button" data-tab="create">Créer</button>
+    <button type="button" class="active" data-tab="search">Search</button>
+    <button type="button" data-tab="modify">Edit</button>
+    <button type="button" data-tab="create">Create</button>
   </nav>
   <div id="status"></div>
   <div id="creds" class="panel" hidden></div>
 
   <section id="tab-search">
     <form id="search">
-      <select id="kind" aria-label="Rechercher par">
+      <select id="kind" aria-label="Search by">
         <option value="tenant">Tenant</option>
         <option value="account">Storage account</option>
         <option value="bucket">Bucket</option>
       </select>
-      <input type="text" id="query" placeholder="nom complet ou avec *" autocomplete="off" autofocus required
+      <input type="text" id="query" placeholder="full name or with *" autocomplete="off" autofocus required
              maxlength="2000" pattern="[A-Za-z0-9._*,\-]+" list="tenants-datalist">
-      <button type="submit" id="go">Rechercher</button>
-      <button type="button" class="secondary" id="tenants-go">Lister les tenants</button>
+      <button type="submit" id="go">Search</button>
+      <button type="button" class="secondary" id="tenants-go">List tenants</button>
     </form>
     <datalist id="tenants-datalist"></datalist>
     <p class="empty" id="search-help"></p>
     <div id="tenants-panel" class="panel" hidden></div>
     <div class="toolbar" id="toolbar">
-      <input type="text" id="filter" placeholder="Filtrer les résultats..." autocomplete="off">
-      <button type="button" class="secondary" id="copy">Copier les buckets affichés</button>
-      <button type="button" class="secondary" id="csv">Exporter en CSV</button>
-      <button type="button" class="secondary" id="print">Imprimer</button>
+      <input type="text" id="filter" placeholder="Filter the results..." autocomplete="off">
+      <button type="button" class="secondary" id="copy">Copy displayed buckets</button>
+      <button type="button" class="secondary" id="csv">Export as CSV</button>
+      <button type="button" class="secondary" id="print">Print</button>
     </div>
     <div id="bucket-panel" class="panel" hidden></div>
     <div id="results"></div>
   </section>
 
   <section id="tab-modify" hidden>
-    <p class="empty" id="m-empty">Aucun bucket sélectionné : cherche-le dans « Rechercher », puis clique sur « Modifier ».</p>
+    <p class="empty" id="m-empty">No bucket selected: find it in "Search", then click "Edit".</p>
     <div id="m-main" hidden>
       <h2 id="m-title"></h2>
       <div id="m-summary"></div>
@@ -222,64 +222,64 @@ PAGE = r"""<!doctype html>
   </section>
 
   <section id="tab-create" hidden>
-    <h3>Créer un storage account</h3>
+    <h3>Create a storage account</h3>
     <form id="account-form" class="grid-form" autocomplete="off">
-      <label for="a-id">Compte</label>
+      <label for="a-id">Account</label>
       <input type="text" id="a-id" required maxlength="132" placeholder="ex. sa-fina-0001">
-      <small>sa-&lt;tenant&gt;-&lt;suffixe&gt;</small>
+      <small>sa-&lt;tenant&gt;-&lt;suffix&gt;</small>
       <label for="a-meta">x-Account-Meta-name</label>
-      <input type="text" id="a-meta" placeholder="facultatif">
-      <div class="buttons"><button type="submit" id="a-go">Créer le compte</button></div>
+      <input type="text" id="a-meta" placeholder="optional">
+      <div class="buttons"><button type="submit" id="a-go">Create the account</button></div>
     </form>
 
-    <h3>Créer un bucket</h3>
+    <h3>Create a bucket</h3>
     <form id="bucket-form" class="grid-form" autocomplete="off">
-      <label for="c-account">Compte</label>
+      <label for="c-account">Account</label>
       <input type="text" id="c-account" required list="accounts-list" maxlength="132" placeholder="ex. sa-fina-0001">
       <datalist id="accounts-list"></datalist>
-      <label for="c-bucket">Nom du bucket</label>
+      <label for="c-bucket">Bucket name</label>
       <input type="text" id="c-bucket" required maxlength="63" placeholder="ex. fina-docs">
-      <small>3 à 63 caractères : minuscules, chiffres, - et .</small>
-      <label for="c-quota">Quota (Go)</label>
+      <small>3 to 63 characters: lowercase letters, digits, - and .</small>
+      <label for="c-quota">Quota (GB)</label>
       <input type="text" id="c-quota" required inputmode="numeric" placeholder="ex. 60">
       <label for="c-location">Storage location</label>
       <input type="text" id="c-location" required list="locations-list" placeholder="ex. cv-dev-01">
       <datalist id="locations-list"></datalist>
       <div id="c-location-choices" class="chips"></div>
-      <label for="c-ips">IP autorisées</label>
-      <textarea id="c-ips" rows="4" required placeholder="Une IP (ou CIDR) par ligne, ou séparées par des virgules"></textarea>
+      <label for="c-ips">Allowed IPs</label>
+      <textarea id="c-ips" rows="4" required placeholder="One IP (or CIDR) per line, or comma-separated"></textarea>
       <label for="c-meta">x-Account-Meta-name</label>
-      <input type="text" id="c-meta" placeholder="facultatif">
-      <div class="buttons"><button type="submit" id="c-go">Créer le bucket</button></div>
+      <input type="text" id="c-meta" placeholder="optional">
+      <div class="buttons"><button type="submit" id="c-go">Create the bucket</button></div>
     </form>
 
-    <details id="tab-bulk"><summary>Création en masse (fichier JSON)</summary>
-    <p class="empty">Crée plusieurs comptes et buckets d'après un fichier de configuration JSON. Charge un fichier, colle son contenu, ou
-    pars de l'exemple, puis prévisualise avant d'exécuter. Format : <code>defaults</code> (valeurs par défaut des buckets),
-    <code>accounts</code> (comptes à créer) et <code>buckets</code> (buckets à créer).</p>
+    <details id="tab-bulk"><summary>Bulk creation (JSON file)</summary>
+    <p class="empty">Creates several accounts and buckets from a JSON configuration file. Load a file, paste its content, or
+    start from the example, then preview before running. Format: <code>defaults</code> (default values for the buckets),
+    <code>accounts</code> (accounts to create) and <code>buckets</code> (buckets to create).</p>
     <div class="row-buttons">
-      <button type="button" class="secondary" id="b-load">Charger un fichier JSON...</button>
+      <button type="button" class="secondary" id="b-load">Load a JSON file...</button>
       <input type="file" id="b-file" accept=".json,application/json" hidden>
-      <button type="button" class="secondary" id="b-example">Insérer un exemple</button>
+      <button type="button" class="secondary" id="b-example">Insert an example</button>
     </div>
-    <fieldset id="b-legacy" hidden><legend>Générer depuis config.json (format hive_management.py)</legend>
+    <fieldset id="b-legacy" hidden><legend>Generate from config.json (hive_management.py format)</legend>
       <div id="b-envs"></div>
-      <button type="button" class="secondary" id="b-expand">Générer le fichier</button>
+      <button type="button" class="secondary" id="b-expand">Generate the file</button>
     </fieldset>
     <textarea id="b-doc" rows="16" spellcheck="false" placeholder='{"accounts": [...], "buckets": [...]}'></textarea>
-    <fieldset><legend>Credentials pour les comptes du fichier</legend>
-      <label><input type="radio" name="b-creds" value="none" checked> aucune</label>
-      <label><input type="radio" name="b-creds" value="get"> récupérer l'existante</label>
-      <label><input type="radio" name="b-creds" value="create"> générer une nouvelle</label>
+    <fieldset><legend>Credentials for the accounts in the file</legend>
+      <label><input type="radio" name="b-creds" value="none" checked> none</label>
+      <label><input type="radio" name="b-creds" value="get"> fetch the existing one</label>
+      <label><input type="radio" name="b-creds" value="create"> generate a new one</label>
     </fieldset>
-    <button type="button" id="b-preview">Prévisualiser</button>
-    <button type="button" id="b-run" disabled>Exécuter le plan</button>
+    <button type="button" id="b-preview">Preview</button>
+    <button type="button" id="b-run" disabled>Run the plan</button>
     <div id="b-plan"></div>
     <div id="b-result"></div>
     </details>
   </section>
 
-  <details id="logbox" hidden><summary>Détails de l'appel API</summary><pre id="log"></pre></details>
+  <details id="logbox" hidden><summary>API call details</summary><pre id="log"></pre></details>
 </main>
 <script>
   const $ = id => document.getElementById(id);
@@ -333,9 +333,9 @@ PAGE = r"""<!doctype html>
     let out;
     try {
       const res = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
-      try { out = await res.json(); } catch (e) { out = {error: 'Réponse invalide (HTTP ' + res.status + ')'}; }
+      try { out = await res.json(); } catch (e) { out = {error: 'Invalid response (HTTP ' + res.status + ')'}; }
     } catch (err) {
-      out = {error: 'Erreur : ' + err};
+      out = {error: 'Error: ' + err};
     }
     return out;
   }
@@ -365,43 +365,43 @@ PAGE = r"""<!doctype html>
   // ---- credentials panel ----------------------------------------------------
   function copyText(text, label) {
     navigator.clipboard.writeText(text).then(
-      () => setStatus(label + ' copié.', false),
-      () => setStatus('Copie impossible (presse-papiers refusé).', true));
+      () => setStatus(label + ' copied.', false),
+      () => setStatus('Cannot copy (clipboard access denied).', true));
   }
 
   function showCreds(list) {
     const box = $('creds');
     box.textContent = '';
-    box.append(el('strong', 'Credentials (affichées ici seulement, rien n\'est écrit sur disque)'));
+    box.append(el('strong', 'Credentials (shown here only, nothing is written to disk)'));
     for (const c of list) {
       const wrap = el('div', undefined, 'cred');
       wrap.append(el('div', c.account, 'mono'));
 
       const r1 = el('div', undefined, 'row');
       r1.append(el('span', 'Access key ID', 'k'), el('span', c.access_key_id, 'v'));
-      const c1 = el('button', 'Copier', 'small secondary');
+      const c1 = el('button', 'Copy', 'small secondary');
       c1.addEventListener('click', () => copyText(c.access_key_id, 'Access key ID'));
       r1.append(c1);
 
       const r2 = el('div', undefined, 'row');
       const secret = el('span', '••••••••••••', 'v');
       let shown = false;
-      const reveal = el('button', 'Afficher', 'small secondary');
+      const reveal = el('button', 'Show', 'small secondary');
       reveal.addEventListener('click', () => {
         shown = !shown;
         secret.textContent = shown ? c.secret_key : '••••••••••••';
-        reveal.textContent = shown ? 'Masquer' : 'Afficher';
+        reveal.textContent = shown ? 'Hide' : 'Show';
       });
-      const c2 = el('button', 'Copier', 'small secondary');
+      const c2 = el('button', 'Copy', 'small secondary');
       c2.addEventListener('click', () => copyText(c.secret_key, 'Secret key'));
       r2.append(el('span', 'Secret key', 'k'), secret, reveal, c2);
 
       wrap.append(r1, r2);
       box.append(wrap);
     }
-    const all = el('button', 'Copier en JSON', 'small secondary');
+    const all = el('button', 'Copy as JSON', 'small secondary');
     all.addEventListener('click', () => copyText(JSON.stringify({credentials: list}, null, 2), 'Credentials (JSON)'));
-    const close = el('button', 'Effacer', 'small secondary');
+    const close = el('button', 'Clear', 'small secondary');
     close.addEventListener('click', () => { box.textContent = ''; box.hidden = true; });
     const bar = el('div');
     bar.style.display = 'flex'; bar.style.gap = '6px';
@@ -450,22 +450,22 @@ PAGE = r"""<!doctype html>
     return findMatching(details, /^allowed_ips?$/i, isStringList) ?? findMatching(details, /allowed.?ip|whitelist|firewall/i, isStringList);
   }
 
-  const yesNo = v => v === true ? 'Oui' : v === false ? 'Non' : String(v);
-  function fmtDate(v) { const n = Number(v); return Number.isFinite(n) && n > 0 ? new Date(n).toLocaleString('fr-FR') : String(v); }
+  const yesNo = v => v === true ? 'Yes' : v === false ? 'No' : String(v);
+  function fmtDate(v) { const n = Number(v); return Number.isFinite(n) && n > 0 ? new Date(n).toLocaleString('en-GB') : String(v); }
   // [key in the listing, label, formatter]
   const BUCKET_FIELDS = [
     ['storage_location', 'Storage location', v => labelFor(String(v))],
-    ['creation_time', 'Créé le', fmtDate],
+    ['creation_time', 'Created', fmtDate],
     ['hard_quota', 'Quota', v => fmtBytes(Number(v))],
-    ['bytes_used', 'Utilisation', v => fmtBytes(Number(v))],
-    ['object_count', 'Objets', v => Number(v).toLocaleString('fr-FR')],
+    ['bytes_used', 'Usage', v => fmtBytes(Number(v))],
+    ['object_count', 'Objects', v => Number(v).toLocaleString('en-GB')],
     ['versioning_state', 'Versioning', String],
-    ['bucket_lifecycle_policy', 'Politique de cycle de vie', String],
+    ['bucket_lifecycle_policy', 'Lifecycle policy', String],
     ['notifications_configuration', 'Notifications', String],
-    ['static_website_enabled', 'Site web statique', yesNo],
-    ['bucket_replication_policy', 'Réplication', yesNo],
-    ['object_lock_enabled', "Verrouillage d'objets", yesNo],
-    ['has_active_inventory_policy', 'Inventaire actif', yesNo],
+    ['static_website_enabled', 'Static website', yesNo],
+    ['bucket_replication_policy', 'Replication', yesNo],
+    ['object_lock_enabled', 'Object lock', yesNo],
+    ['has_active_inventory_policy', 'Active inventory', yesNo],
     ['is_backup_vault', 'Backup vault', yesNo],
     ['is_legacy', 'Legacy', yesNo],
   ];
@@ -490,27 +490,27 @@ PAGE = r"""<!doctype html>
   }
   function usageSummary(entry) {
     const box = el('div', undefined, 'usage');
-    if (!entry) { box.append(el('span', 'Objets et utilisation indisponibles (bucket absent du listage).', 'empty')); return box; }
+    if (!entry) { box.append(el('span', 'Objects and usage unavailable (bucket missing from the listing).', 'empty')); return box; }
     const objects = num(entry.object_count), used = num(entry.bytes_used), quota = num(entry.hard_quota);
     const p = pct(used, quota);
-    box.append(el('strong', objects === null ? 'n/d' : objects.toLocaleString('fr-FR')), ' objet(s) \u00b7 ',
-               el('strong', fmtBytes(used)), ' utilisés sur ', el('strong', fmtBytes(quota)), ' de quota (' + fmtPct(p) + ')', bar(p));
+    box.append(el('strong', objects === null ? 'n/a' : objects.toLocaleString('en-GB')), ' object(s) \u00b7 ',
+               el('strong', fmtBytes(used)), ' used of ', el('strong', fmtBytes(quota)), ' quota (' + fmtPct(p) + ')', bar(p));
     return box;
   }
 
   async function openBucket(account, bucket, mode) {
-    setStatus('Lecture du bucket ' + bucket + '...', false);
+    setStatus('Reading bucket ' + bucket + '...', false);
     const out = await post('/api/bucket/get', {bucket});
     showLog(out.log);
     const ok = !out.error && out.ok;
     setStatus(ok ? '' : (out.error || out.message), !ok);
-    const box = panelHeader(mode === 'edit' ? 'Modifier le quota et les IP autorisées' : 'Bucket ' + bucket + ' (' + account + ')', $(mode === 'edit' ? 'm-edit' : 'bucket-panel'));
+    const box = panelHeader(mode === 'edit' ? 'Edit the quota and the allowed IPs' : 'Bucket ' + bucket + ' (' + account + ')', $(mode === 'edit' ? 'm-edit' : 'bucket-panel'));
 
     if (mode === 'view') {
       const entry = (info[account] || {})[bucket];
       const details = ok ? out.details : null;
       box.append(usageSummary(entry));
-      if (!ok) box.append(el('div', 'Détails du bucket (GET) indisponibles : ' + (out.error || out.message) + '.', 'empty'));
+      if (!ok) box.append(el('div', 'Bucket details (GET) unavailable: ' + (out.error || out.message) + '.', 'empty'));
       if (entry) {
         const pick = key => entry[key] !== undefined ? entry[key] : findKey(details, key);
         const used = pick('bytes_used'), quota = pick('hard_quota');
@@ -518,31 +518,31 @@ PAGE = r"""<!doctype html>
         for (const [key, label, fmt] of BUCKET_FIELDS) {
           const v = pick(key);
           if (v === undefined || v === null) continue;
-          rows.push([label, key === 'bytes_used' ? fmtBytes(Number(v)) + (Number(quota) > 0 ? ' (' + fmtPct(pct(Number(v), Number(quota))) + ' du quota)' : '') : fmt(v)]);
+          rows.push([label, key === 'bytes_used' ? fmtBytes(Number(v)) + (Number(quota) > 0 ? ' (' + fmtPct(pct(Number(v), Number(quota))) + ' of the quota)' : '') : fmt(v)]);
         }
         const ipList = findIps(details);
-        if (ipList !== undefined) rows.push(['IP autorisées (pare-feu)', ipList.length ? ipList.join(', ') : 'aucune']);
+        if (ipList !== undefined) rows.push(['Allowed IPs (firewall)', ipList.length ? ipList.join(', ') : 'none']);
         const known = new Set(BUCKET_FIELDS.map(f => f[0]).concat(['name']));
         const extra = flatten(Object.fromEntries(Object.entries(entry).filter(([k]) => !known.has(k))), '', []);
-        if (rows.length) box.append(table(['Information', 'Valeur'], rows));
+        if (rows.length) box.append(table(['Information', 'Value'], rows));
         if (extra.length) {
           const more = el('details');
-          more.append(el('summary', 'Autres champs du listage (' + extra.length + ')'), table(['Champ', 'Valeur'], extra));
+          more.append(el('summary', 'Other listing fields (' + extra.length + ')'), table(['Field', 'Value'], extra));
           box.append(more);
         }
         const rawEntry = el('details');
-        rawEntry.append(el('summary', 'Entrée brute du listage'), el('pre', JSON.stringify(entry, null, 2)));
+        rawEntry.append(el('summary', 'Raw listing entry'), el('pre', JSON.stringify(entry, null, 2)));
         box.append(rawEntry);
       } else if (ok) {
         const rows = details !== null && typeof details === 'object' ? flatten(details, '', []) : [];
-        if (rows.length) box.append(table(['Champ', 'Valeur'], rows));
+        if (rows.length) box.append(table(['Field', 'Value'], rows));
       }
       if (ok) {
         const raw = el('details');
-        raw.append(el('summary', 'Réponse brute de GET /container/' + bucket), el('pre', out.raw));
+        raw.append(el('summary', 'Raw response of GET /container/' + bucket), el('pre', out.raw));
         box.append(raw);
       }
-      const close = el('button', 'Fermer', 'small secondary');
+      const close = el('button', 'Close', 'small secondary');
       close.addEventListener('click', () => closePanel(box));
       box.append(close);
       return;
@@ -552,13 +552,13 @@ PAGE = r"""<!doctype html>
     const details = ok ? out.details : null;
     const quota = findQuota(details);
     const ips = findIps(details);
-    box.append(el('div', 'Seuls les champs modifiés sont envoyés (PATCH). La storage location ne se change pas ici.', 'empty'));
-    if (!ok) box.append(el('div', 'Détails illisibles : les champs restent vides, renseigne ce que tu veux changer.', 'empty'));
+    box.append(el('div', 'Only the fields you change are sent (PATCH). The storage location cannot be changed here.', 'empty'));
+    if (!ok) box.append(el('div', 'Details unreadable: the fields stay empty, fill in what you want to change.', 'empty'));
     else {
       const unread = [];
-      if (quota === undefined) unread.push('le quota');
-      if (ips === undefined) unread.push('les IP autorisées');
-      if (unread.length) box.append(el('div', 'Non lu dans la réponse de l\'API : ' + unread.join(' et ') + '. Ouvre « Voir » dans « Rechercher » pour les retrouver dans la réponse brute.', 'empty'));
+      if (quota === undefined) unread.push('the quota');
+      if (ips === undefined) unread.push('the allowed IPs');
+      if (unread.length) box.append(el('div', 'Not read from the API response: ' + unread.join(' and ') + '. Open "View" in "Search" to find them in the raw response.', 'empty'));
     }
 
     const form = el('form', undefined, 'grid-form');
@@ -566,11 +566,11 @@ PAGE = r"""<!doctype html>
     const fQuota = el('input'); fQuota.type = 'text'; fQuota.inputMode = 'numeric';
     fQuota.value = typeof quota === 'number' ? String(Math.round(quota / 1e9 * 100) / 100) : '';
     const fIps = el('textarea'); fIps.rows = 4; fIps.value = Array.isArray(ips) ? ips.join('\n') : '';
-    form.append(el('label', 'Quota (Go)'), fQuota, el('label', 'IP autorisées'), fIps);
+    form.append(el('label', 'Quota (GB)'), fQuota, el('label', 'Allowed IPs'), fIps);
     const ipList = v => v.split(/[\s,;]+/).filter(Boolean).join(',');
     const initial = {quota: fQuota.value.trim(), ips: ipList(fIps.value)};
     const buttons = el('div', undefined, 'buttons');
-    const save = el('button', 'Enregistrer'); save.type = 'submit';
+    const save = el('button', 'Save'); save.type = 'submit';
     buttons.append(save);
     form.append(buttons);
     form.addEventListener('submit', async e => {
@@ -583,13 +583,13 @@ PAGE = r"""<!doctype html>
         quota_gb: quotaText && quotaText !== initial.quota ? quotaText : '',
         allowed_ips: newIps && newIps !== initial.ips ? fIps.value : '',
       };
-      if (!body.quota_gb && !body.allowed_ips) { setStatus('Aucune modification à envoyer.', false); return; }
-      const summary = 'Modifier le bucket "' + bucket + '"\n' +
-        (body.quota_gb ? '  quota : ' + body.quota_gb + ' Go\n' : '') +
-        (body.allowed_ips ? '  IP autorisées : ' + body.allowed_ips.split(/[\s,;]+/).filter(Boolean).length + '\n' : '');
+      if (!body.quota_gb && !body.allowed_ips) { setStatus('Nothing to send.', false); return; }
+      const summary = 'Edit bucket "' + bucket + '"\n' +
+        (body.quota_gb ? '  quota: ' + body.quota_gb + ' GB\n' : '') +
+        (body.allowed_ips ? '  allowed IPs: ' + body.allowed_ips.split(/[\s,;]+/).filter(Boolean).length + '\n' : '');
       if (!confirm(summary)) return;
       save.disabled = true;
-      setStatus('Modification en cours...', false);
+      setStatus('Updating...', false);
       const res = await post('/api/bucket/update', body);
       save.disabled = false;
       if (res.log) showLog(res.log);
@@ -607,30 +607,30 @@ PAGE = r"""<!doctype html>
 
   // ---- replication to PAG (cos2pag) -------------------------------------------------
   const STEP_STATE = {
-    preview: {CHANGED: 'À faire', SKIPPED: 'Déjà en place', OK: 'OK'},
-    run: {CHANGED: 'Fait', SKIPPED: 'Déjà en place', OK: 'OK'},
+    preview: {CHANGED: 'To do', SKIPPED: 'Already in place', OK: 'OK'},
+    run: {CHANGED: 'Done', SKIPPED: 'Already in place', OK: 'OK'},
   };
 
   const TEARDOWN_STATE = {
-    preview: {CHANGED: 'À faire', SKIPPED: 'Rien à faire', FAILED: 'Échec', NOT_RUN: 'Non exécuté'},
-    run: {CHANGED: 'Fait', SKIPPED: 'Rien à faire', FAILED: 'Échec', NOT_RUN: 'Non exécuté'},
+    preview: {CHANGED: 'To do', SKIPPED: 'Nothing to do', FAILED: 'Failed', NOT_RUN: 'Not run'},
+    run: {CHANGED: 'Done', SKIPPED: 'Nothing to do', FAILED: 'Failed', NOT_RUN: 'Not run'},
   };
-  const DAY_NAMES = {sunday: 'dimanche', monday: 'lundi', tuesday: 'mardi', wednesday: 'mercredi', thursday: 'jeudi', friday: 'vendredi', saturday: 'samedi'};
+  const DAY_NAMES = {sunday: 'Sunday', monday: 'Monday', tuesday: 'Tuesday', wednesday: 'Wednesday', thursday: 'Thursday', friday: 'Friday', saturday: 'Saturday'};
 
   function openReplication(account, bucket) {
-    const box = panelHeader('Répliquer vers PAG : ' + bucket + ' (' + account + ')', $('m-repl'));
-    const close = el('button', 'Fermer', 'small secondary');
+    const box = panelHeader('Replicate to PAG: ' + bucket + ' (' + account + ')', $('m-repl'));
+    const close = el('button', 'Close', 'small secondary');
     close.type = 'button';
     close.addEventListener('click', () => closePanel(box));
     box.scrollIntoView({block: 'nearest'});
     if (!replicationConfigured) {
-      box.append(el('p', 'La réplication vers PAG n\'est pas configurée. Installe cos2pag dans le même environnement Python (pip install <dossier de cos2pag>) ' +
-        'et ajoute à config.json : "cos2pag": {"config": "<chemin du config.yaml de cos2pag>", "env_file": "<chemin de son .env>"}.', 'empty'), close);
+      box.append(el('p', 'Replication to PAG is not configured. Install cos2pag in the same Python environment (pip install <cos2pag folder>) ' +
+        'and add to config.json: "cos2pag": {"config": "<path to cos2pag\'s config.yaml>", "env_file": "<path to its .env>"}.', 'empty'), close);
       return;
     }
-    box.append(el('p', 'Enchaîne ce que fait cos2pag : COS (ACL, liste blanche d\'IP et notifications du bucket), PAG (partition, dépôt, buffer, cycle de vie) puis ' +
-      'PDR (tâche de réplication). Chaque étape est idempotente. Pour modifier une réplication existante, change la rétention puis simule : ' +
-      'les étapes qui changeraient passent à « À faire ». « Simuler » n\'envoie aucune modification ; « Exécuter » n\'est possible qu\'après une simulation réussie.', 'empty'));
+    box.append(el('p', 'Chains what cos2pag does: COS (ACL, IP whitelist and notifications of the bucket), PAG (partition, repository, buffer, lifecycle), then ' +
+      'PDR (replication task). Every step is idempotent. To edit an existing replication, change the retention then simulate: ' +
+      'the steps that would change show as "To do". "Simulate" sends no change; "Run" is only possible after a successful simulation.', 'empty'));
 
     const statusBox = el('div');
     box.append(statusBox);
@@ -640,15 +640,15 @@ PAGE = r"""<!doctype html>
     tenant.setAttribute('list', 'partitions-list');
     const tenantHint = el('small', '', 'tenant-hint');
     const retention = el('input');
-    retention.type = 'text'; retention.inputMode = 'numeric'; retention.placeholder = 'valeur de cos2pag (pag.lifecycle)';
-    form.append(el('label', 'Tenant PAG (partition)'), tenant,
-                el('small', 'Nom exact de la partition PAG (une par tenant, la casse compte). À vérifier : plusieurs tenants partagent un préfixe (ME, ME-SR, ME-SRE...).'),
+    retention.type = 'text'; retention.inputMode = 'numeric'; retention.placeholder = 'cos2pag value (pag.lifecycle)';
+    form.append(el('label', 'PAG tenant (partition)'), tenant,
+                el('small', 'Exact name of the PAG partition (one per tenant, case matters). Check it: several tenants share a prefix (ME, ME-SR, ME-SRE...).'),
                 tenantHint,
-                el('label', 'Rétention (jours)'), retention,
-                el('small', 'Durée de conservation des versions non courantes sur PAG (--noncurrent-expiration-days). Vide : on garde la valeur du config.yaml de cos2pag.'));
+                el('label', 'Retention (days)'), retention,
+                el('small', 'How long noncurrent versions are kept on PAG (--noncurrent-expiration-days). Empty: keep the value from cos2pag\'s config.yaml.'));
     const buttons = el('div', undefined, 'buttons');
-    const simulate = el('button', 'Simuler (dry-run)'); simulate.type = 'button';
-    const run = el('button', 'Exécuter', 'secondary'); run.type = 'button'; run.disabled = true;
+    const simulate = el('button', 'Simulate (dry-run)'); simulate.type = 'button';
+    const run = el('button', 'Run', 'secondary'); run.type = 'button'; run.disabled = true;
     buttons.append(simulate, run, close);
     form.append(buttons);
     const result = el('div');
@@ -664,29 +664,29 @@ PAGE = r"""<!doctype html>
       statusBox.textContent = '';
       const out = await post('/api/replication/status', {bucket});
       if (out.error || !out.ok) {
-        statusBox.append(el('div', 'État de la réplication illisible : ' + (out.error || out.message), 'empty'));
+        statusBox.append(el('div', 'Replication state unreadable: ' + (out.error || out.message), 'empty'));
         return;
       }
-      const rows = [['Tâche de réplication (PDR)', out.pdr.found ? 'présente (id ' + out.pdr.id + ')' : 'absente : pas encore répliqué']];
+      const rows = [['Replication task (PDR)', out.pdr.found ? 'present (id ' + out.pdr.id + ')' : 'absent: not replicated yet']];
       const sch = out.pdr.schedule;
       if (out.pdr.found && sch) {
-        rows.push(['Planification', (sch.enabled ? 'activée' : 'désactivée') + (sch.days.length ? ' : ' + sch.days.map(d => DAY_NAMES[d]).join(', ') : '') +
-                                    (sch.hour !== null && sch.hour !== undefined ? ' à ' + sch.hour + ' h' : '')]);
+        rows.push(['Schedule', (sch.enabled ? 'enabled' : 'disabled') + (sch.days.length ? ' : ' + sch.days.map(d => DAY_NAMES[d]).join(', ') : '') +
+                                    (sch.hour !== null && sch.hour !== undefined ? ' at ' + sch.hour + ':00' : '')]);
       }
       const days = out.lifecycle.noncurrent_days;
-      rows.push(['Rétention des versions non courantes (PAG)', days !== null ? days + ' jours' : (out.lifecycle.readable ? 'non définie' : 'illisible (pas encore de dépôt sur PAG ?)')]);
-      statusBox.append(el('strong', 'État actuel'), table(['Élément', 'Valeur'], rows));
+      rows.push(['Noncurrent version retention (PAG)', days !== null ? days + ' days' : (out.lifecycle.readable ? 'not set' : 'unreadable (no repository on PAG yet?)')]);
+      statusBox.append(el('strong', 'Current state'), table(['Item', 'Value'], rows));
       if (prefill && days !== null && !retention.value.trim()) retention.value = String(days);
     }
     refreshStatus(true);
 
     // ---- suspend or undo --------------------------------------------------------------
     const down = el('fieldset');
-    down.append(el('legend', 'Suspendre ou défaire la réplication'));
+    down.append(el('legend', 'Suspend or undo the replication'));
     for (const [value, title, text] of [
-      ['suspend', 'Suspendre la tâche dans PDR', 'Désactive la planification et les notifications de la tâche, sans rien supprimer. Réversible : « Exécuter » plus haut reprend la réplication.'],
-      ['undo', 'Tout défaire, garder le dépôt PAG', 'Supprime la tâche PDR et retire de COS l\'ACL et l\'IP de PDR ajoutées pour la réplication. Le dépôt PAG, ses données et son cycle de vie sont conservés.'],
-      ['purge', 'Tout défaire, y compris le dépôt PAG', 'Comme ci-dessus, et supprime le dépôt PAG : les copies archivées sont perdues. Irréversible.'],
+      ['suspend', 'Suspend the task in PDR', 'Disables the task\'s schedule and notifications, deleting nothing. Reversible: "Run" above resumes the replication.'],
+      ['undo', 'Undo everything, keep the PAG repository', 'Deletes the PDR task and removes from COS the ACL and the PDR IP added for the replication. The PAG repository, its data and its lifecycle are kept.'],
+      ['purge', 'Undo everything, including the PAG repository', 'As above, and deletes the PAG repository: the archived copies are lost. Irreversible.'],
     ]) {
       const label = el('label');
       label.style.display = 'block'; label.style.marginBottom = '6px';
@@ -695,8 +695,8 @@ PAGE = r"""<!doctype html>
       label.append(radio, el('strong', ' ' + title), el('div', text, 'empty'));
       down.append(label);
     }
-    const downSim = el('button', 'Simuler'); downSim.type = 'button';
-    const downRun = el('button', 'Exécuter', 'danger'); downRun.type = 'button'; downRun.disabled = true;
+    const downSim = el('button', 'Simulate'); downSim.type = 'button';
+    const downRun = el('button', 'Run', 'danger'); downRun.type = 'button'; downRun.disabled = true;
     const downButtons = el('div', undefined, 'row-buttons');
     downButtons.append(downSim, downRun);
     const downResult = el('div');
@@ -712,19 +712,19 @@ PAGE = r"""<!doctype html>
 
     async function callDown(dry) {
       const lv = level(), name = tenant.value.trim();
-      if (lv === 'purge' && !name) { setStatus('Saisis le tenant PAG pour supprimer le dépôt.', true); return; }
+      if (lv === 'purge' && !name) { setStatus('Enter the PAG tenant to delete the repository.', true); return; }
       let typed;
       if (!dry) {
         if (lv === 'suspend') {
-          if (!confirm('Suspendre la réplication de "' + bucket + '" ? La tâche PDR n\'est pas supprimée.')) return;
+          if (!confirm('Suspend the replication of "' + bucket + '"? The PDR task is not deleted.')) return;
         } else {
-          const warning = lv === 'purge' ? 'ATTENTION : le dépôt PAG sera supprimé avec les copies archivées. C\'est irréversible.\n\n' : '';
-          typed = prompt(warning + 'Défaire la réplication de "' + bucket + '" : supprimer la tâche PDR et retirer l\'accès ajouté sur COS.\nTape le nom du bucket pour confirmer.');
-          if (typed !== bucket) { setStatus('Opération annulée.', false); return; }
+          const warning = lv === 'purge' ? 'WARNING: the PAG repository will be deleted along with the archived copies. This is irreversible.\n\n' : '';
+          typed = prompt(warning + 'Undo the replication of "' + bucket + '": delete the PDR task and remove the access added on COS.\nType the bucket name to confirm.');
+          if (typed !== bucket) { setStatus('Operation cancelled.', false); return; }
         }
       }
       downSim.disabled = true; downRun.disabled = true;
-      setStatus(dry ? 'Simulation en cours...' : 'Exécution en cours...', false);
+      setStatus(dry ? 'Simulation in progress...' : 'Running...', false);
       downResult.textContent = '';
       const out = await post(dry ? '/api/replication/teardown/preview' : '/api/replication/teardown/run', {bucket, tenant: name, level: lv, confirm: typed});
       downSim.disabled = false;
@@ -732,7 +732,7 @@ PAGE = r"""<!doctype html>
       setStatus(out.error || out.message, !!out.error || !out.ok);
       if (out.steps && out.steps.length) {
         const states = TEARDOWN_STATE[dry ? 'preview' : 'run'];
-        downResult.append(table(['Étape', 'État', 'Détail'], out.steps.map(st => [st.name,
+        downResult.append(table(['Step', 'State', 'Detail'], out.steps.map(st => [st.name,
           {text: states[st.status] || st.status, cls: st.status === 'CHANGED' ? 'ok' : st.status === 'FAILED' ? 'fail' : undefined}, st.detail])));
       }
       if (dry && out.ok) { downSimulated = downKey(); downRun.disabled = false; }
@@ -744,13 +744,13 @@ PAGE = r"""<!doctype html>
 
     async function call(dry) {
       const name = tenant.value.trim();
-      if (!name) { setStatus('Saisis le tenant PAG.', true); return; }
+      if (!name) { setStatus('Enter the PAG tenant.', true); return; }
       const days = retention.value.trim();
-      if (!dry && !confirm('Mettre en place la réplication de "' + bucket + '" vers la partition PAG "' + name + '" ?' +
-          (days ? '\nRétention des versions non courantes : ' + days + ' jours.' : '') + '\n\n' +
-          'Cela modifie le bucket côté COS (ACL, liste blanche d\'IP, notifications) et crée ou met à jour des objets dans PAG et PDR.')) return;
+      if (!dry && !confirm('Set up the replication of "' + bucket + '" to the PAG partition "' + name + '"?' +
+          (days ? '\nNoncurrent version retention: ' + days + ' days.' : '') + '\n\n' +
+          'This changes the bucket on the COS side (ACL, IP whitelist, notifications) and creates or updates objects in PAG and PDR.')) return;
       simulate.disabled = true; run.disabled = true;
-      setStatus(dry ? 'Simulation en cours...' : 'Mise en place de la réplication en cours...', false);
+      setStatus(dry ? 'Simulation in progress...' : 'Setting up the replication...', false);
       result.textContent = '';
       const out = await post(dry ? '/api/replication/preview' : '/api/replication/run', {bucket, tenant: name, noncurrent_days: days});
       simulate.disabled = false;
@@ -758,7 +758,7 @@ PAGE = r"""<!doctype html>
       setStatus(out.error || out.message, !!out.error || !out.ok);
       if (out.steps && out.steps.length) {
         const states = STEP_STATE[dry ? 'preview' : 'run'];
-        result.append(table(['Étape', 'État', 'Détail'], out.steps.map(st => [st.name, {text: states[st.status] || (st.status === 'FAILED' ? 'Échec' : st.status), cls: st.status === 'CHANGED' ? 'ok' : st.status === 'FAILED' ? 'fail' : undefined}, st.detail])));
+        result.append(table(['Step', 'State', 'Detail'], out.steps.map(st => [st.name, {text: states[st.status] || (st.status === 'FAILED' ? 'Failed' : st.status), cls: st.status === 'CHANGED' ? 'ok' : st.status === 'FAILED' ? 'fail' : undefined}, st.detail])));
       }
       if (dry && out.ok) { simulatedFor = key(); run.disabled = false; }
       else if (!dry && out.ok) { simulatedFor = null; refreshStatus(false); }
@@ -781,21 +781,21 @@ PAGE = r"""<!doctype html>
       if (partitionNames === null || !name) return;
       const same = partitionNames.filter(n => n.toLowerCase() === name.toLowerCase());
       if (partitionNames.includes(name)) {
-        tenantHint.textContent = 'La partition PAG « ' + name + ' » existe : elle sera utilisée, rien n\'est créé.';
+        tenantHint.textContent = 'The PAG partition "' + name + '" exists: it will be used, nothing is created.';
         tenantHint.classList.add('ok');
       } else if (same.length) {
         tenantHint.classList.add('bad');
         tenantHint.append(same.length === 1
-          ? 'Une partition existe sous le nom « ' + same[0] + ' » (casse différente) : cos2pag la recréerait et PAG refuserait. '
-          : 'Plusieurs partitions ne diffèrent que par la casse : ' + same.join(', ') + '. ');
+          ? 'A partition exists under the name "' + same[0] + '" (different case): cos2pag would recreate it and PAG would refuse. '
+          : 'Several partitions differ only by case: ' + same.join(', ') + '. ');
         for (const n of same) {
-          const use = el('button', 'Utiliser « ' + n + ' »', 'small secondary');
+          const use = el('button', 'Use "' + n + '"', 'small secondary');
           use.type = 'button';
           use.addEventListener('click', () => { tenant.value = n; tenantTouched = true; lock(); downLock(); describeTenant(); });
           tenantHint.append(use);
         }
       } else {
-        tenantHint.textContent = 'Aucune partition « ' + name + ' » : cos2pag la créera avec les réglages new_partition_defaults de son config.yaml.';
+        tenantHint.textContent = 'No partition "' + name + '": cos2pag will create it with the new_partition_defaults of its config.yaml.';
       }
     }
     tenant.addEventListener('input', () => { tenantTouched = true; describeTenant(); });
@@ -803,7 +803,7 @@ PAGE = r"""<!doctype html>
     (async () => {
       const out = await post('/api/replication/partitions', {});
       if (out.error || !out.ok) {
-        tenantHint.textContent = 'Partitions PAG illisibles : ' + (out.error || out.message);
+        tenantHint.textContent = 'PAG partitions unreadable: ' + (out.error || out.message);
         tenantHint.classList.add('bad');
         return;
       }
@@ -819,10 +819,10 @@ PAGE = r"""<!doctype html>
   }
 
   async function deleteBucket(account, bucket) {
-    const typed = prompt('Supprimer définitivement le bucket "' + bucket + '" (compte ' + account + ').\n' +
-                         'Cette action est irréversible. Tape le nom du bucket pour confirmer.');
-    if (typed !== bucket) { setStatus('Suppression annulée.', false); return; }
-    setStatus('Suppression en cours...', false);
+    const typed = prompt('Permanently delete the bucket "' + bucket + '" (account ' + account + ').\n' +
+                         'This cannot be undone. Type the bucket name to confirm.');
+    if (typed !== bucket) { setStatus('Deletion cancelled.', false); return; }
+    setStatus('Deleting...', false);
     const out = await post('/api/bucket/delete', {bucket, confirm: typed});
     if (out.log) showLog(out.log);
     const ok = !out.error && out.ok;
@@ -839,7 +839,7 @@ PAGE = r"""<!doctype html>
   }
 
   // ---- search ---------------------------------------------------------------
-  let selected = null;   // {account, bucket}: the bucket the "Modifier" tab works on
+  let selected = null;   // {account, bucket}: the bucket the "Edit" tab works on
 
   function cell(content, cls) {
     const td = el('td', typeof content === 'string' ? content : undefined, cls);
@@ -861,7 +861,7 @@ PAGE = r"""<!doctype html>
       if (list.length) {
         const t = el('table');
         const head = el('tr');
-        for (const [title, cls] of [['Bucket', ''], ['Objets', 'num'], ['Utilisé', 'num'], ['Quota', 'num'], ['% du quota', 'num'], ['', '']]) head.append(el('th', title, cls));
+        for (const [title, cls] of [['Bucket', ''], ['Objects', 'num'], ['Used', 'num'], ['Quota', 'num'], ['% of quota', 'num'], ['', '']]) head.append(el('th', title, cls));
         t.append(head);
         for (const b of list) {
           const e = (info[account] || {})[b];
@@ -872,21 +872,21 @@ PAGE = r"""<!doctype html>
           pctCell.append(fmtPct(p) + ' ', bar(p));
           const actions = el('td');
           actions.style.whiteSpace = 'nowrap';
-          for (const [act, label, cls] of [['view', 'Voir', 'secondary'], ['edit', 'Modifier', '']]) {
+          for (const [act, label, cls] of [['view', 'View', 'secondary'], ['edit', 'Edit', '']]) {
             const btn = el('button', label, 'small ' + cls);
             btn.dataset.act = act; btn.dataset.bucket = b; btn.dataset.account = account;
             actions.append(btn, ' ');
           }
-          tr.append(cell(b, 'mono'), cell(objects === null ? 'n/d' : objects.toLocaleString('fr-FR'), 'num'), cell(fmtBytes(used), 'num'),
+          tr.append(cell(b, 'mono'), cell(objects === null ? 'n/a' : objects.toLocaleString('en-GB'), 'num'), cell(fmtBytes(used), 'num'),
                     cell(fmtBytes(quota), 'num'), pctCell, actions);
           t.append(tr);
         }
         card.append(t);
       } else {
-        card.append(el('div', 'Aucun bucket', 'empty'));
+        card.append(el('div', 'No bucket', 'empty'));
       }
       const actions = el('div', undefined, 'actions');
-      for (const [mode, label] of [['get', 'Récupérer les credentials'], ['create', 'Générer de nouvelles credentials']]) {
+      for (const [mode, label] of [['get', 'Get the credentials'], ['create', 'Generate new credentials']]) {
         const b = el('button', label, 'small secondary');
         b.dataset.account = account;
         b.dataset.cred = mode;
@@ -900,9 +900,9 @@ PAGE = r"""<!doctype html>
   $('filter').addEventListener('input', render);
 
   async function credentials(account, mode, btn) {
-    if (mode === 'create' && !confirm('Générer une nouvelle paire de credentials pour ' + account + ' ?')) return;
+    if (mode === 'create' && !confirm('Generate a new credentials pair for ' + account + '?')) return;
     btn.disabled = true;
-    setStatus(mode === 'get' ? 'Récupération des credentials...' : 'Génération des credentials...', false);
+    setStatus(mode === 'get' ? 'Fetching the credentials...' : 'Generating the credentials...', false);
     const out = await post('/api/creds/' + mode, {account});
     btn.disabled = false;
     showLog(out.log);
@@ -923,7 +923,7 @@ PAGE = r"""<!doctype html>
     if (b) await credentials(b.dataset.account, b.dataset.cred, b);
   });
 
-  // ---- the "Modifier" tab: works on the bucket picked in the results ----------------------------------------
+  // ---- the "Edit" tab: works on the bucket picked in the results ----------------------------------------
   function renderSelected() {
     $('m-empty').hidden = !!selected;
     $('m-main').hidden = !selected;
@@ -940,10 +940,10 @@ PAGE = r"""<!doctype html>
     const actions = $('m-actions');
     actions.textContent = '';
     const add = (label, cls, handler) => { const b = el('button', label, 'small ' + cls); b.type = 'button'; b.addEventListener('click', () => handler(b)); actions.append(b); };
-    add('Répliquer vers PAG', 'secondary', () => openReplication(account, bucket));
-    add('Récupérer les credentials du compte', 'secondary', b => credentials(account, 'get', b));
-    add('Générer de nouvelles credentials', 'secondary', b => credentials(account, 'create', b));
-    add('Supprimer le bucket', 'danger', () => deleteBucket(account, bucket));
+    add('Replicate to PAG', 'secondary', () => openReplication(account, bucket));
+    add('Get the account credentials', 'secondary', b => credentials(account, 'get', b));
+    add('Generate new credentials', 'secondary', b => credentials(account, 'create', b));
+    add('Delete the bucket', 'danger', () => deleteBucket(account, bucket));
     closePanel($('m-repl'));
     showTab('modify');
     return openBucket(account, bucket, 'edit');
@@ -959,7 +959,7 @@ PAGE = r"""<!doctype html>
     const q = $('filter').value.trim().toLowerCase();
     const quote = v => '"' + String(v === null || v === undefined ? '' : v).replace(/"/g, '""') + '"';
     const iso = ms => { const d = new Date(Number(ms)); return ms && Number.isFinite(d.getTime()) ? d.toISOString() : ''; };
-    const lines = [['tenant', 'compte', 'bucket', 'storage_location', 'quota_octets', 'utilisation_octets', 'utilisation_pct', 'objets', 'cree_le']];
+    const lines = [['tenant', 'account', 'bucket', 'storage_location', 'quota_bytes', 'used_bytes', 'used_pct', 'objects', 'created_at']];
     for (const [account, buckets] of Object.entries(data)) for (const b of buckets) {
       if (!b.toLowerCase().includes(q)) continue;
       const e = (info[account] || {})[b] || {};
@@ -987,9 +987,9 @@ PAGE = r"""<!doctype html>
   }
 
   const KIND_HELP = {
-    tenant: ['fina ou fi*', 'Nom complet du tenant (fina) ou motif avec * (fi*, *ina*) ; plusieurs tenants séparés par des virgules (fina,act). « Lister les tenants » permet de cocher plusieurs tenants. Un appel API par compte trouvé.'],
-    account: ['sa-fina-0001 ou sa-fina-*', 'Nom complet du storage account (sa-fina-0001) ou motif avec * (sa-fina-*, *-0001). Le préfixe sa- peut être omis.'],
-    bucket: ['fina-docs ou *docs*', 'Nom complet du bucket : un seul appel. Avec * (*docs*, fina-*) : tous les comptes sont parcourus, un appel API par compte, ça peut être long.'],
+    tenant: ['fina or fi*', 'Full tenant name (fina) or pattern with * (fi*, *ina*); several tenants separated by commas (fina,act). "List tenants" lets you tick several tenants. One API call per account found.'],
+    account: ['sa-fina-0001 or sa-fina-*', 'Full storage account name (sa-fina-0001) or pattern with * (sa-fina-*, *-0001). The sa- prefix may be left out.'],
+    bucket: ['fina-docs or *docs*', 'Full bucket name: a single call. With * (*docs*, fina-*): every account is scanned, one API call per account, which can take a while.'],
   };
   function syncKind() {
     const [placeholder, help] = KIND_HELP[$('kind').value];
@@ -1006,7 +1006,7 @@ PAGE = r"""<!doctype html>
     go.disabled = true;
     if (!keepMessage) {
       const many = kind === 'bucket' && value.includes('*');
-      setStatus(many ? 'Parcours de tous les comptes (un appel API par compte, ça peut être long)...' : 'Recherche en cours (un appel API par compte, ça peut prendre un moment)...', false);
+      setStatus(many ? 'Scanning every account (one API call per account, this can take a while)...' : 'Searching (one API call per account, this can take a moment)...', false);
     }
     $('results').textContent = '';
     closePanel($('bucket-panel'));
@@ -1015,7 +1015,7 @@ PAGE = r"""<!doctype html>
       const res = await fetch('/api/search?kind=' + kind + '&q=' + encodeURIComponent(value));
       const out = await res.json();
       showLog(out.log);
-      if (!res.ok || out.error) { setStatus(out.error || ('Erreur HTTP ' + res.status), true); return; }
+      if (!res.ok || out.error) { setStatus(out.error || ('HTTP error ' + res.status), true); return; }
       data = out.accounts;
       info = out.info || {};
       const n = Object.keys(data).length;
@@ -1024,15 +1024,15 @@ PAGE = r"""<!doctype html>
         let msg;
         if (out.message) msg = out.message;
         else if (kind === 'bucket') {
-          if (total) msg = total + ' bucket(s) trouvé(s) dans ' + n + ' compte(s)' + (out.scanned ? ' (' + out.scanned + ' compte(s) parcouru(s))' : '') + '.';
-          else if (out.found_without_owner) msg = 'Bucket trouvé, mais aucun compte propriétaire dans la réponse de l\'API (voir les détails) : cherche avec un motif, par exemple *' + value + '*.';
-          else if (value.includes('*')) msg = 'Aucun bucket ne correspond à "' + value + '" dans les ' + out.scanned + ' compte(s) parcouru(s).';
-          else msg = 'Aucun bucket nommé "' + value + '"' + (out.status ? ' (HTTP ' + out.status + ')' : '') +
-                     '. Si tu sais qu\'il existe, essaie avec un motif : *' + value + '*.';
+          if (total) msg = total + ' bucket(s) found in ' + n + ' account(s)' + (out.scanned ? ' (' + out.scanned + ' account(s) scanned)' : '') + '.';
+          else if (out.found_without_owner) msg = 'Bucket found, but the API response names no owner account (see the details): search with a pattern, for example *' + value + '*.';
+          else if (value.includes('*')) msg = 'No bucket matches "' + value + '" in the ' + out.scanned + ' account(s) scanned.';
+          else msg = 'No bucket named "' + value + '"' + (out.status ? ' (HTTP ' + out.status + ')' : '') +
+                     '. If you know it exists, try a pattern: *' + value + '*.';
         } else {
-          const what = kind === 'tenant' ? 'tenant' : 'compte';
-          msg = n ? n + ' compte(s) pour le ' + what + ' "' + value + '", ' + total + ' bucket(s).' : 'Aucun ' + what + ' ne correspond à "' + value + '".';
-          if (out.has_error) msg += ' Des erreurs ont eu lieu, voir les détails.';
+          const what = kind === 'tenant' ? 'tenant' : 'account';
+          msg = n ? n + ' account(s) for the ' + what + ' "' + value + '", ' + total + ' bucket(s).' : 'No ' + what + ' matches "' + value + '".';
+          if (out.has_error) msg += ' Errors occurred, see the details.';
         }
         setStatus(msg, out.has_error);
       }
@@ -1044,7 +1044,7 @@ PAGE = r"""<!doctype html>
       }
       render();
     } catch (err) {
-      setStatus('Erreur : ' + err, true);
+      setStatus('Error: ' + err, true);
     } finally {
       go.disabled = false;
     }
@@ -1089,13 +1089,13 @@ PAGE = r"""<!doctype html>
     const box = $('tenants-panel');
     box.textContent = '';
     box.append(el('strong', tenants.length + ' tenant(s) ' + (tenantSource === 'vaults'
-      ? '(déduits des container vaults cv-<tenant>-<numéro>)' : '(déduits des comptes sa-<tenant>-<numéro>)')));
-    const input = el('input'); input.type = 'text'; input.placeholder = 'Filtrer...'; input.value = filter || '';
+      ? '(deduced from the container vaults cv-<tenant>-<number>)' : '(deduced from the accounts sa-<tenant>-<number>)')));
+    const input = el('input'); input.type = 'text'; input.placeholder = 'Filter...'; input.value = filter || '';
     input.addEventListener('input', () => renderTenants(input.value)); box.append(el('br'), input);
     const shown = tenants.filter(t => !filter || t.name.toLowerCase().includes(filter.toLowerCase()));
     const list = el('div', undefined, 'chips');
     const go = el('button', '', 'small');
-    const updateGo = () => { go.textContent = 'Afficher les buckets (' + picked.size + ' tenant(s))'; go.disabled = !picked.size; };
+    const updateGo = () => { go.textContent = 'Show the buckets (' + picked.size + ' tenant(s))'; go.disabled = !picked.size; };
     for (const t of shown) {
       const items = t.vaults || t.accounts;
       const label = el('label');
@@ -1107,11 +1107,11 @@ PAGE = r"""<!doctype html>
       list.append(label);
     }
     go.addEventListener('click', () => searchTenants([...picked].sort()));
-    const all = el('button', 'Tout cocher' + (filter ? ' (filtrés)' : ''), 'small secondary');
+    const all = el('button', 'Tick all' + (filter ? ' (filtered)' : ''), 'small secondary');
     all.addEventListener('click', () => { shown.forEach(t => picked.add(t.name)); renderTenants(filter); });
-    const none = el('button', 'Tout décocher', 'small secondary');
+    const none = el('button', 'Untick all', 'small secondary');
     none.addEventListener('click', () => { picked.clear(); renderTenants(filter); });
-    const close = el('button', 'Fermer', 'small secondary');
+    const close = el('button', 'Close', 'small secondary');
     close.addEventListener('click', () => { box.textContent = ''; box.hidden = true; });
     const bar = el('div', undefined, 'row-buttons');
     bar.append(go, all, none, close);
@@ -1124,21 +1124,21 @@ PAGE = r"""<!doctype html>
   $('tenants-go').addEventListener('click', async () => {
     const btn = $('tenants-go');
     btn.disabled = true;
-    setStatus('Lecture des tenants...', false);
+    setStatus('Reading the tenants...', false);
     try {
       const res = await fetch('/api/tenants');
       const out = await res.json();
       showLog(out.log);
-      if (!res.ok || out.error) { setStatus(out.error || ('Erreur HTTP ' + res.status), true); return; }
+      if (!res.ok || out.error) { setStatus(out.error || ('HTTP error ' + res.status), true); return; }
       tenants = out.tenants;
       tenantSource = out.source;
       const list = $('tenants-datalist');
       list.textContent = '';
       for (const t of tenants) { const o = el('option'); o.value = t.name; list.append(o); }
-      setStatus(out.message || (tenants.length + ' tenant(s) trouvé(s).'), out.has_error);
+      setStatus(out.message || (tenants.length + ' tenant(s) found.'), out.has_error);
       if (tenants.length) renderTenants(''); else { $('tenants-panel').hidden = true; }
     } catch (err) {
-      setStatus('Erreur : ' + err, true);
+      setStatus('Error: ' + err, true);
     } finally {
       btn.disabled = false;
     }
@@ -1152,10 +1152,10 @@ PAGE = r"""<!doctype html>
   $('account-form').addEventListener('submit', async e => {
     e.preventDefault();
     const body = {account: $('a-id').value.trim(), account_meta_name: $('a-meta').value.trim()};
-    if (!confirm('Créer le storage account "' + body.account + '"\n  x-Account-Meta-name : ' + (body.account_meta_name || '(aucun)'))) return;
+    if (!confirm('Create the storage account "' + body.account + '"\n  x-Account-Meta-name: ' + (body.account_meta_name || '(none)'))) return;
     const btn = $('a-go');
     btn.disabled = true;
-    setStatus('Création du compte en cours...', false);
+    setStatus('Creating the account...', false);
     const out = await post('/api/account/create', body);
     btn.disabled = false;
     if (out.log) showLog(out.log);
@@ -1174,16 +1174,16 @@ PAGE = r"""<!doctype html>
       account_meta_name: $('c-meta').value.trim(),
     };
     const ips = body.allowed_ips.split(/[\s,;]+/).filter(Boolean).length;
-    const summary = 'Créer le bucket "' + body.bucket + '"\n' +
-      '  compte : ' + body.account + '\n' +
-      '  quota : ' + body.quota_gb + ' Go\n' +
-      '  storage location : ' + body.storage_location + '\n' +
-      '  IP autorisées : ' + ips + '\n' +
-      '  x-Account-Meta-name : ' + (body.account_meta_name || '(aucun)');
+    const summary = 'Create the bucket "' + body.bucket + '"\n' +
+      '  account: ' + body.account + '\n' +
+      '  quota: ' + body.quota_gb + ' GB\n' +
+      '  storage location: ' + body.storage_location + '\n' +
+      '  allowed IPs: ' + ips + '\n' +
+      '  x-Account-Meta-name: ' + (body.account_meta_name || '(none)');
     if (!confirm(summary)) return;
     const btn = $('c-go');
     btn.disabled = true;
-    setStatus('Création du bucket en cours...', false);
+    setStatus('Creating the bucket...', false);
     const out = await post('/api/bucket/create', body);
     btn.disabled = false;
     if (out.log) showLog(out.log);
@@ -1200,9 +1200,9 @@ PAGE = r"""<!doctype html>
 
   function bulkRequest() {
     const text = $('b-doc').value.trim();
-    if (!text) throw new Error('Le fichier de configuration est vide.');
+    if (!text) throw new Error('The configuration file is empty.');
     let document_;
-    try { document_ = JSON.parse(text); } catch (e) { throw new Error('JSON invalide : ' + e.message); }
+    try { document_ = JSON.parse(text); } catch (e) { throw new Error('Invalid JSON: ' + e.message); }
     return {document: document_, credentials: document.querySelector('input[name=b-creds]:checked').value};
   }
 
@@ -1219,14 +1219,14 @@ PAGE = r"""<!doctype html>
   $('b-file').addEventListener('change', () => {
     const file = $('b-file').files[0];
     if (!file) return;
-    if (file.size > 1024 * 1024) { setStatus('Fichier trop volumineux (1 Mo maximum).', true); return; }
+    if (file.size > 1024 * 1024) { setStatus('File too large (1 MB maximum).', true); return; }
     const reader = new FileReader();
     reader.onload = () => {
       $('b-doc').value = String(reader.result);
       invalidatePlan();
-      setStatus('Fichier "' + file.name + '" chargé. Prévisualise avant d\'exécuter.', false);
+      setStatus('File "' + file.name + '" loaded. Preview before running.', false);
     };
-    reader.onerror = () => setStatus('Lecture du fichier impossible.', true);
+    reader.onerror = () => setStatus('Cannot read the file.', true);
     reader.readAsText(file);
     $('b-file').value = '';
   });
@@ -1262,7 +1262,7 @@ PAGE = r"""<!doctype html>
         label.append(cb, ' ' + env);
         box.append(label);
       }
-    } catch (err) { setStatus('Impossible de lire la configuration : ' + err, true); }
+    } catch (err) { setStatus('Cannot read the configuration: ' + err, true); }
   }
 
   $('b-expand').addEventListener('click', async () => {
@@ -1271,7 +1271,7 @@ PAGE = r"""<!doctype html>
     if (out.error) { setStatus(out.error, true); return; }
     $('b-doc').value = JSON.stringify(out.document, null, 2);
     invalidatePlan();
-    setStatus('Fichier généré depuis config.json.' + (out.warnings.length ? ' ' + out.warnings.join(' ') : ''), out.warnings.length > 0);
+    setStatus('File generated from config.json.' + (out.warnings.length ? ' ' + out.warnings.join(' ') : ''), out.warnings.length > 0);
   });
 
   $('b-preview').addEventListener('click', async () => {
@@ -1279,14 +1279,14 @@ PAGE = r"""<!doctype html>
     $('b-result').textContent = '';
     let req;
     try { req = bulkRequest(); } catch (err) { setStatus(err.message, true); return; }
-    setStatus('Calcul du plan...', false);
+    setStatus('Computing the plan...', false);
     const out = await post('/api/bulk/plan', req);
     if (out.error) { setStatus(out.error, true); return; }
     const plan = out.plan, box = $('b-plan');
     const total = plan.accounts.length + plan.buckets.length + plan.credentials.length;
     setStatus(plan.errors.length
-      ? plan.errors.length + ' erreur(s) dans le fichier : corrige-les pour pouvoir exécuter.'
-      : total + ' opération(s) prévue(s).', plan.errors.length > 0);
+      ? plan.errors.length + ' error(s) in the file: fix them to be able to run.'
+      : total + ' operation(s) planned.', plan.errors.length > 0);
     if (plan.errors.length) {
       const list = el('div', undefined, 'err-list');
       for (const e of plan.errors) list.append(el('div', e));
@@ -1294,16 +1294,16 @@ PAGE = r"""<!doctype html>
     }
     if (plan.accounts.length) {
       box.append(el('h3', 'Storage accounts (' + plan.accounts.length + ')'));
-      box.append(table(['Compte', 'x-Account-Meta-name'], plan.accounts.map(a => [a.account_id, a.account_meta_name || ''])));
+      box.append(table(['Account', 'x-Account-Meta-name'], plan.accounts.map(a => [a.account_id, a.account_meta_name || ''])));
     }
     if (plan.buckets.length) {
       box.append(el('h3', 'Buckets (' + plan.buckets.length + ')'));
-      box.append(table(['Compte', 'Bucket', 'Quota (Go)', 'Storage location', 'IP'],
+      box.append(table(['Account', 'Bucket', 'Quota (GB)', 'Storage location', 'IP'],
         plan.buckets.map(b => [b.account_id, b.bucket_name, String(b.quota_gb), b.storage_location, String(b.ip_count)])));
     }
     if (plan.credentials.length) {
-      box.append(el('h3', (req.credentials === 'create' ? 'Nouvelles credentials' : 'Credentials existantes') + ' (' + plan.credentials.length + ')'));
-      box.append(table(['Compte'], plan.credentials.map(c => [c.account_id])));
+      box.append(el('h3', (req.credentials === 'create' ? 'New credentials' : 'Existing credentials') + ' (' + plan.credentials.length + ')'));
+      box.append(table(['Account'], plan.credentials.map(c => [c.account_id])));
     }
     if (total && !plan.errors.length) { plannedKey = JSON.stringify(req); plannedCount = total; $('b-run').disabled = false; }
   });
@@ -1311,25 +1311,25 @@ PAGE = r"""<!doctype html>
   $('b-run').addEventListener('click', async () => {
     let req;
     try { req = bulkRequest(); } catch (err) { setStatus(err.message, true); return; }
-    if (JSON.stringify(req) !== plannedKey) { invalidatePlan(); setStatus('Le fichier a changé : prévisualise de nouveau.', true); return; }
+    if (JSON.stringify(req) !== plannedKey) { invalidatePlan(); setStatus('The file has changed: preview again.', true); return; }
     const n = String(plannedCount);
-    if (!confirm('Exécuter ' + n + ' opération(s) d\'après ce fichier ?')) return;
-    if (prompt('Tape ' + n + ' (le nombre d\'opérations) pour confirmer.') !== n) {
-      setStatus('Exécution annulée.', false);
+    if (!confirm('Run ' + n + ' operation(s) from this file?')) return;
+    if (prompt('Type ' + n + ' (the number of operations) to confirm.') !== n) {
+      setStatus('Run cancelled.', false);
       return;
     }
     $('b-run').disabled = true; $('b-preview').disabled = true;
-    setStatus('Exécution en cours (un appel API par opération)...', false);
+    setStatus('Running (one API call per operation)...', false);
     const out = await post('/api/bulk/run', req);
     $('b-preview').disabled = false;
     if (out.log) showLog(out.log);
     if (out.error) { setStatus(out.error, true); return; }
     const failed = out.results.filter(r => !r.ok).length;
-    setStatus(out.results.length + ' opération(s), ' + failed + ' échec(s).', failed > 0);
+    setStatus(out.results.length + ' operation(s), ' + failed + ' failure(s).', failed > 0);
     const box = $('b-result');
     box.textContent = '';
-    box.append(el('h3', 'Résultat'));
-    box.append(table(['Étape', 'Cible', 'Résultat'],
+    box.append(el('h3', 'Result'));
+    box.append(table(['Step', 'Target', 'Result'],
       out.results.map(r => [r.kind, r.target, {text: r.message, cls: r.ok ? 'ok' : 'fail'}])));
     if (out.credentials.length) showCreds(out.credentials);
     invalidatePlan();
@@ -1337,14 +1337,14 @@ PAGE = r"""<!doctype html>
 
   // ---- formatting ----------------------------------------------------------------------
   function fmtBytes(n) {
-    if (n === null || n === undefined) return 'n/d';
-    const units = ['o', 'ko', 'Mo', 'Go', 'To', 'Po'];
+    if (n === null || n === undefined) return 'n/a';
+    const units = ['B', 'kB', 'MB', 'GB', 'TB', 'PB'];
     let v = n, i = 0;
     while (v >= 1000 && i < units.length - 1) { v /= 1000; i++; }
-    return (i === 0 ? String(v) : (Math.round(v * 100) / 100).toLocaleString('fr-FR')) + ' ' + units[i];
+    return (i === 0 ? String(v) : (Math.round(v * 100) / 100).toLocaleString('en-GB')) + ' ' + units[i];
   }
   function pct(used, quota) { return quota > 0 && used !== null && used !== undefined ? used / quota * 100 : null; }
-  function fmtPct(p) { return p === null ? 'n/d' : (Math.round(p * 10) / 10).toLocaleString('fr-FR') + ' %'; }
+  function fmtPct(p) { return p === null ? 'n/a' : (Math.round(p * 10) / 10).toLocaleString('en-GB') + ' %'; }
   function pctClass(p) { return p === null ? 'num' : p >= 100 ? 'num crit' : p >= 80 ? 'num warn' : 'num'; }
 
   loadInfo();
@@ -1622,7 +1622,7 @@ def search(config, kind, query):
             collect([{'id': owner}], keep=lambda n: n == name)
             result['accounts'].setdefault(owner, [name])
         elif status != 404:
-            result.update(message=f'Échec : HTTP {status} - {text[:500]}', has_error=True)
+            result.update(message=f'Failed: HTTP {status} - {text[:500]}', has_error=True)
 
     _, log, aborted = call_api(work)
     if aborted:
@@ -1638,7 +1638,7 @@ def _http(thunk):
     try:
         status, text = thunk()
     except requests.RequestException as err:
-        return None, '', f'Erreur réseau : {err}'
+        return None, '', f'Network error: {err}'
     return status, text, None
 
 
@@ -1649,7 +1649,7 @@ def _write_outcome(thunk, ok_message, ok_statuses=CREATED):
         return False, error
     if status in ok_statuses:
         return True, ok_message
-    return False, f'Échec : HTTP {status} - {text[:500]}'
+    return False, f'Failed: HTTP {status} - {text[:500]}'
 
 
 def _run_write(thunk, ok_message, ok_statuses=CREATED):
@@ -1673,20 +1673,20 @@ def _valid_meta(value):
     """Optional x-Account-Meta-name. Returns (value_or_None, error)."""
     meta = str(value or '').strip()
     if meta and not LABEL_RE.match(meta):
-        return None, "Valeur invalide pour l'en-tête x-Account-Meta-name."
+        return None, 'Invalid value for the x-Account-Meta-name header.'
     return meta or None, None
 
 
 def _parse_quota(value):
     """Quota in GB from an int or a numeric string. Returns (int, error)."""
     if isinstance(value, bool):
-        return None, 'Quota invalide (nombre entier de Go).'
+        return None, 'Invalid quota (whole number of GB).'
     try:
         quota = int(str(value).strip())
     except ValueError:
-        return None, 'Quota invalide (nombre entier de Go).'
+        return None, 'Invalid quota (whole number of GB).'
     if not 1 <= quota <= MAX_QUOTA_GB:
-        return None, f'Quota invalide (entre 1 et {MAX_QUOTA_GB} Go).'
+        return None, f'Invalid quota (between 1 and {MAX_QUOTA_GB} GB).'
     return quota, None
 
 
@@ -1697,13 +1697,13 @@ def _parse_ips(value):
     elif isinstance(value, list) and all(isinstance(v, str) for v in value):
         raws = [v.strip() for v in value]
     else:
-        return None, 'Liste d\'IP invalide.'
+        return None, 'Invalid IP list.'
     ips = []
     for raw in filter(None, raws):
         try:
             ipaddress.ip_network(raw, strict=False)
         except ValueError:
-            return None, f'Adresse IP invalide : {raw[:64]}'
+            return None, f'Invalid IP address: {raw[:64]}'
         if raw not in ips:
             ips.append(raw)
     return ips, None
@@ -1711,17 +1711,17 @@ def _parse_ips(value):
 
 def _parse_location(value):
     location = str(value or '').strip()
-    return (location, None) if LABEL_RE.match(location) else (None, 'Storage location invalide.')
+    return (location, None) if LABEL_RE.match(location) else (None, 'Invalid storage location.')
 
 
 def parse_create_bucket(body):
     """Validate the JSON body of POST /api/bucket/create. Returns (params, error)."""
     account = _valid_account(body)
     if not account:
-        return None, 'Compte invalide (attendu : sa-<tenant>-<suffixe>).'
+        return None, 'Invalid account (expected: sa-<tenant>-<suffix>).'
     bucket = _text(body, 'bucket')
     if not BUCKET_RE.match(bucket):
-        return None, 'Nom de bucket invalide (3 à 63 caractères : minuscules, chiffres, - et .).'
+        return None, 'Invalid bucket name (3 to 63 characters: lowercase letters, digits, - and .).'
     quota_gb, error = _parse_quota(body.get('quota_gb', ''))
     if error:
         return None, error
@@ -1732,7 +1732,7 @@ def parse_create_bucket(body):
     if error:
         return None, error
     if not ips:
-        return None, 'Au moins une IP autorisée est requise.'
+        return None, 'At least one allowed IP is required.'
     meta, error = _valid_meta(body.get('account_meta_name'))
     if error:
         return None, error
@@ -1752,7 +1752,7 @@ def handle_create_bucket(config, body):
         return 400, {'error': error}
     return 200, _run_write(
         lambda: hm.create_bucket(config, **params),
-        f"Bucket {params['bucket_name']} créé dans {params['account_id']}.",
+        f"Bucket {params['bucket_name']} created in {params['account_id']}.",
     )
 
 
@@ -1764,13 +1764,13 @@ def _existing_bucket(body):
 def handle_get_bucket(config, body):
     bucket = _existing_bucket(body)
     if not bucket:
-        return 400, {'error': 'Nom de bucket invalide.'}
+        return 400, {'error': 'Invalid bucket name.'}
     result, log, aborted = call_api(lambda: _http(lambda: hm.get_bucket(config, bucket)))
     if aborted:
         return 200, {'ok': False, 'message': MSG_NO_CREDS, 'log': log}
     status, text, error = result
     if error or status != 200:
-        return 200, {'ok': False, 'log': log, 'message': error or f'Échec : HTTP {status} - {text[:500]}'}
+        return 200, {'ok': False, 'log': log, 'message': error or f'Failed: HTTP {status} - {text[:500]}'}
     try:
         details = json.loads(text)
     except json.JSONDecodeError:
@@ -1782,7 +1782,7 @@ def parse_update_bucket(body):
     """Validate the JSON body of POST /api/bucket/update (a PATCH: only the fields given are changed)."""
     bucket = _existing_bucket(body)
     if not bucket:
-        return None, 'Nom de bucket invalide.'
+        return None, 'Invalid bucket name.'
     params = {'bucket_name': bucket}
     if _text(body, 'quota_gb'):
         params['quota_gb'], error = _parse_quota(body['quota_gb'])
@@ -1793,14 +1793,14 @@ def parse_update_bucket(body):
         if error:
             return None, error
         if not ips:
-            return None, 'Au moins une IP autorisée est requise.'
+            return None, 'At least one allowed IP is required.'
         params['allowed_ips'] = ips
     if _text(body, 'storage_location'):
         params['storage_location'], error = _parse_location(body['storage_location'])
         if error:
             return None, error
     if len(params) == 1:
-        return None, 'Rien à modifier.'
+        return None, 'Nothing to change.'
     return params, None
 
 
@@ -1810,7 +1810,7 @@ def handle_update_bucket(config, body):
         return 400, {'error': error}
     return 200, _run_write(
         lambda: hm.update_bucket(config, **params),
-        f"Bucket {params['bucket_name']} modifié.",
+        f"Bucket {params['bucket_name']} updated.",
         DONE,
     )
 
@@ -1818,12 +1818,12 @@ def handle_update_bucket(config, body):
 def handle_delete_bucket(config, body):
     bucket = _existing_bucket(body)
     if not bucket:
-        return 400, {'error': 'Nom de bucket invalide.'}
+        return 400, {'error': 'Invalid bucket name.'}
     if _text(body, 'confirm') != bucket:
-        return 400, {'error': 'Confirmation incorrecte : tape le nom exact du bucket.'}
+        return 400, {'error': 'Wrong confirmation: type the exact bucket name.'}
     return 200, _run_write(
         lambda: hm.delete_bucket(config, bucket),
-        f'Bucket {bucket} supprimé.',
+        f'Bucket {bucket} deleted.',
         DONE,
     )
 
@@ -1831,20 +1831,20 @@ def handle_delete_bucket(config, body):
 def handle_create_account(config, body):
     account = _valid_account(body)
     if not account:
-        return 400, {'error': 'Compte invalide (attendu : sa-<tenant>-<suffixe>).'}
+        return 400, {'error': 'Invalid account (expected: sa-<tenant>-<suffix>).'}
     meta, error = _valid_meta(body.get('account_meta_name'))
     if error:
         return 400, {'error': error}
     return 200, _run_write(
         lambda: hm.create_storage_account(config, account, meta),
-        f'Compte {account} créé.',
+        f'Account {account} created.',
     )
 
 
 def handle_credentials(config, body, create):
     account = _valid_account(body)
     if not account:
-        return 400, {'error': 'Compte invalide (attendu : sa-<tenant>-<suffixe>).'}
+        return 400, {'error': 'Invalid account (expected: sa-<tenant>-<suffix>).'}
     fetch = hm.request_credential_for if create else hm.fetch_credential_for
     cred, log, aborted = call_api(lambda: fetch(config, account))
     if aborted:
@@ -1852,11 +1852,11 @@ def handle_credentials(config, body, create):
     if not cred:
         return 200, {
             'ok': False, 'log': log, 'credentials': [],
-            'message': f"Échec {'de la génération' if create else 'de la récupération'} des credentials (voir les détails).",
+            'message': f"Failed to {'generate' if create else 'get'} the credentials (see the details).",
         }
     return 200, {
         'ok': True, 'log': log,
-        'message': f"Credentials {'générées' if create else 'récupérées'} pour {account}.",
+        'message': f"Credentials {'generated' if create else 'fetched'} for {account}.",
         'credentials': [{
             'account': account,
             'access_key_id': cred['access_key_id'],
@@ -1876,22 +1876,22 @@ def parse_bulk_document(document):
     """
     plan = {'accounts': [], 'buckets': [], 'credentials': []}
     if not isinstance(document, dict):
-        return plan, ['Le fichier doit être un objet JSON : {"accounts": [...], "buckets": [...]}.']
-    errors = [f'Clé inconnue à la racine : {str(key)[:40]}' for key in document if key not in BULK_KEYS]
+        return plan, ['The file must be a JSON object: {"accounts": [...], "buckets": [...]}.']
+    errors = [f'Unknown key at the root: {str(key)[:40]}' for key in document if key not in BULK_KEYS]
 
     defaults = document.get('defaults') or {}
     if not isinstance(defaults, dict):
-        errors.append('"defaults" doit être un objet.')
+        errors.append('"defaults" must be an object.')
         defaults = {}
-    errors += [f'Clé inconnue dans defaults : {str(key)[:40]}' for key in defaults if key not in DEFAULT_KEYS]
+    errors += [f'Unknown key in defaults: {str(key)[:40]}' for key in defaults if key not in DEFAULT_KEYS]
     defaults = {k: v for k, v in defaults.items() if k in DEFAULT_KEYS and v is not None}
 
     accounts_in = document.get('accounts') or []
     buckets_in = document.get('buckets') or []
     if not isinstance(accounts_in, list) or not isinstance(buckets_in, list):
-        return plan, errors + ['"accounts" et "buckets" doivent être des listes.']
+        return plan, errors + ['"accounts" and "buckets" must be lists.']
     if not accounts_in and not buckets_in:
-        return plan, errors + ['Le fichier ne contient ni comptes ni buckets.']
+        return plan, errors + ['The file contains no accounts or buckets.']
 
     seen_accounts, seen_buckets, targets = set(), set(), []
 
@@ -1904,18 +1904,18 @@ def parse_bulk_document(document):
         if isinstance(entry, str):
             entry = {'id': entry}
         if not isinstance(entry, dict):
-            errors.append(f'{where} : attendu un objet {{"id": ...}} ou un identifiant.')
+            errors.append(f'{where}: expected an object {{"id": ...}} or an identifier.')
             continue
         unknown = [str(k)[:40] for k in entry if k not in ACCOUNT_KEYS]
         if unknown:
-            errors.append(f'{where} : clé inconnue {", ".join(unknown)}.')
+            errors.append(f'{where}: unknown key {", ".join(unknown)}.')
             continue
         account_id = str(entry.get('id', '')).strip()
         if not ACCOUNT_RE.match(account_id):
-            errors.append(f'{where} : identifiant de compte invalide "{account_id[:64]}" (attendu : sa-<tenant>-<suffixe>).')
+            errors.append(f'{where}: invalid account identifier "{account_id[:64]}" (expected: sa-<tenant>-<suffix>).')
             continue
         if account_id in seen_accounts:
-            errors.append(f'{where} : compte {account_id} en double.')
+            errors.append(f'{where}: account {account_id} is duplicated.')
             continue
         meta, error = _valid_meta(entry.get('account_meta_name', defaults.get('account_meta_name')))
         if error:
@@ -1928,35 +1928,35 @@ def parse_bulk_document(document):
     for i, entry in enumerate(buckets_in):
         where = f'buckets[{i}]'
         if not isinstance(entry, dict):
-            errors.append(f'{where} : attendu un objet.')
+            errors.append(f'{where}: expected an object.')
             continue
         name = str(entry.get('name', '')).strip()
         where = f'{where} ({name[:64]})' if name else where
         unknown = [str(k)[:40] for k in entry if k not in BUCKET_KEYS]
         if unknown:
-            errors.append(f'{where} : clé inconnue {", ".join(unknown)}.')
+            errors.append(f'{where}: unknown key {", ".join(unknown)}.')
             continue
         merged = {**defaults, **{k: v for k, v in entry.items() if v is not None}}
         account_id = str(merged.get('account', '')).strip()
         if not ACCOUNT_RE.match(account_id):
-            errors.append(f'{where} : compte invalide "{account_id[:64]}" (attendu : sa-<tenant>-<suffixe>).')
+            errors.append(f'{where}: invalid account "{account_id[:64]}" (expected: sa-<tenant>-<suffix>).')
             continue
         if not BUCKET_RE.match(name):
-            errors.append(f'{where} : nom de bucket invalide (3 à 63 caractères : minuscules, chiffres, - et .).')
+            errors.append(f'{where}: invalid bucket name (3 to 63 characters: lowercase letters, digits, - and .).')
             continue
         if name in seen_buckets:
             errors.append(f'{where} : bucket en double.')
             continue
         for key in ('quota_gb', 'storage_location', 'allowed_ips'):
             if key not in merged:
-                errors.append(f'{where} : "{key}" manquant (ni dans le bucket, ni dans defaults).')
+                errors.append(f'{where}: "{key}" is missing (neither in the bucket nor in defaults).')
         if any(key not in merged for key in ('quota_gb', 'storage_location', 'allowed_ips')):
             continue
         quota_gb, error = _parse_quota(merged['quota_gb'])
         location, error2 = _parse_location(merged['storage_location'])
         ips, error3 = _parse_ips(merged['allowed_ips'])
         meta, error4 = _valid_meta(merged.get('account_meta_name'))
-        error = error or error2 or error3 or error4 or (None if ips else 'Au moins une IP autorisée est requise.')
+        error = error or error2 or error3 or error4 or (None if ips else 'At least one allowed IP is required.')
         if error:
             errors.append(f'{where} : {error}')
             continue
@@ -1975,7 +1975,7 @@ def parse_bulk_request(body):
     """Validate the JSON body of the bulk endpoints. Returns (plan, credentials_mode, errors, fatal)."""
     credentials = body.get('credentials', 'none')
     if credentials not in ('none', 'get', 'create'):
-        return None, None, [], 'Option credentials invalide.'
+        return None, None, [], 'Invalid credentials option.'
     plan, errors = parse_bulk_document(body.get('document'))
     if credentials == 'none':
         plan['credentials'] = []
@@ -1999,7 +1999,7 @@ def handle_bulk_expand(config, body):
     known = list(config.get('environments', []))
     envs = body.get('environments')
     if not isinstance(envs, list) or not envs or not all(isinstance(e, str) for e in envs):
-        return 400, {'error': 'Choisis au moins un environnement.'}
+        return 400, {'error': 'Choose at least one environment.'}
     unknown = [e for e in envs if e not in known]
     if unknown:
         return 400, {'error': f"Environnement inconnu : {', '.join(unknown)[:64]}"}
@@ -2026,19 +2026,19 @@ def handle_bulk_run(config, body):
     if fatal:
         return 400, {'error': fatal}
     if errors:
-        return 400, {'error': f'Le fichier contient {len(errors)} erreur(s) : prévisualise-le et corrige-les.'}
+        return 400, {'error': f'The file contains {len(errors)} error(s): preview it and fix them.'}
     results, credentials = [], []
 
     def record(kind, target, ok, message):
         results.append({'kind': kind, 'target': target, 'ok': ok, 'message': message})
 
     def write_step(kind, target, thunk):
-        ok, message = _write_outcome(thunk, 'créé')
+        ok, message = _write_outcome(thunk, 'created')
         record(kind, target, ok, message)
 
     def work():
         for item in plan['accounts']:
-            write_step('Compte', item['account_id'], lambda item=item: hm.create_storage_account(
+            write_step('Account', item['account_id'], lambda item=item: hm.create_storage_account(
                 config, item['account_id'], item['account_meta_name']))
         for item in plan['buckets']:
             write_step('Bucket', item['bucket_name'], lambda item=item: hm.create_bucket(config, **item))
@@ -2054,11 +2054,11 @@ def handle_bulk_run(config, body):
                         'secret_key': cred['secret_key'],
                     })
                 record('Credentials', item['account_id'], bool(cred),
-                       ('générées' if create else 'récupérées') if cred else 'échec (voir les détails)')
+                       ('generated' if create else 'fetched') if cred else 'failed (see the details)')
 
     _, log, aborted = call_api(work)
     if aborted:
-        record('Abandon', '', False, MSG_NO_CREDS)
+        record('Aborted', '', False, MSG_NO_CREDS)
     return 200, {'results': results, 'credentials': credentials, 'log': log}
 
 
@@ -2122,12 +2122,12 @@ def _cos2pag_call(config, dry_run, work):
     result = {'ok': False, 'dry_run': dry_run, 'message': '', 'steps': [], 'log': ''}
     settings = replication_settings(config)
     if settings is None:
-        result['message'] = ('Réplication non configurée : ajoute "cos2pag": {"config": "<chemin du config.yaml de cos2pag>", '
-                             '"env_file": "<chemin de son .env>"} à config.json.')
+        result['message'] = ('Replication not configured: add "cos2pag": {"config": "<path to cos2pag\'s config.yaml>", '
+                             '"env_file": "<path to its .env>"} to config.json.')
         return result
     mods = _cos2pag()
     if mods is None:
-        result['message'] = "Le paquet cos2pag n'est pas installé : pip install <dossier de cos2pag> dans le même environnement Python."
+        result['message'] = 'The cos2pag package is not installed: pip install <cos2pag folder> in the same Python environment.'
         return result
 
     handler, logger = _LogLines(), logging.getLogger('cos2pag')
@@ -2143,17 +2143,17 @@ def _cos2pag_call(config, dry_run, work):
             except ReplicationInputError as err:
                 result['message'] = str(err)
             except FileNotFoundError as err:
-                result['message'] = f"Fichier introuvable : {err.filename or err}"
+                result['message'] = f"File not found: {err.filename or err}"
             except mods.ConfigError as err:
-                result['message'] = f'Configuration de cos2pag : {err}'
+                result['message'] = f'cos2pag configuration: {err}'
             except mods.ApiError as err:
-                result['message'] = f'Erreur de l\'API : {err}'
+                result['message'] = f'API error: {err}'
             except KeyError as err:
-                result['message'] = f'Configuration de cos2pag : clé manquante {err}'
+                result['message'] = f'cos2pag configuration: missing key {err}'
             except LookupError as err:
                 result['message'] = f'{err}'
             except Exception as err:  # e.g. boto3 / network errors from a step: report them instead of dropping the request
-                result['message'] = f'{type(err).__name__} : {err}'
+                result['message'] = f'{type(err).__name__}: {err}'
             else:
                 result['ok'] = not any(step['status'] == 'FAILED' for step in result['steps'])
     finally:
@@ -2192,14 +2192,14 @@ def wait_for_source_access(s3, bucket, wait, sleep=time.sleep, step=JOB_WAIT_STE
     while True:
         try:
             s3.list_objects_v2(Bucket=bucket, MaxKeys=1)
-            return True, f'lecture du bucket acceptée par COS après {waited} s' if waited else 'lecture du bucket acceptée par COS'
+            return True, f'COS accepted reading the bucket after {waited} s' if waited else 'COS accepted reading the bucket'
         except Exception as err:   # botocore ClientError and anything else
             if not _is_access_denied(err):
-                return True, f'accès non vérifié ({type(err).__name__} : {err})'
+                return True, f'access not verified ({type(err).__name__}: {err})'
             if waited >= wait:
-                return False, (f"COS refuse toujours (AccessDenied) la lecture du bucket avec les identifiants source de PDR après {waited} s. "
-                               "Ce n'est pas qu'une question de délai : vérifie que la clé d'accès de pdr.source_s3 appartient bien au compte "
-                               "accordé dans l'ACL (cos.backup_service_account.grantee) et que l'IP de PDR est dans la liste blanche du bucket. Une fois corrigé, lance une copie (Copy) de la tâche depuis PDR.")
+                return False, (f"COS still answers AccessDenied when reading the bucket with PDR's source credentials after {waited} s. "
+                               "It is not only a matter of delay: check that the access key of pdr.source_s3 belongs to the account "
+                               "granted in the ACL (cos.backup_service_account.grantee) and that PDR's IP is in the bucket's whitelist. Once fixed, start a Copy job of the task from PDR.")
         sleep(step)
         waited += step
 
@@ -2215,15 +2215,15 @@ def _start_initial_job(config, cfg, bucket, steps):
     pdr_cfg = cfg['pdr']
     ready, detail = wait_for_source_access(build_s3_client(pdr_cfg['source_s3']), bucket, job_wait_seconds(config))
     if not ready:
-        steps.append({'name': 'pdr.job', 'status': 'FAILED', 'detail': f"copie initiale non lancée : {detail}"})
+        steps.append({'name': 'pdr.job', 'status': 'FAILED', 'detail': f"initial copy not started: {detail}"})
         return
     client = mods.PdrClient(pdr_cfg['base_url'], pag_teardown._session(mods, pdr_cfg), timeout=pdr_cfg.get('timeout', 30))
     task = client.find_task_by_alias(bucket)
     if task is None or task.get('id') is None:
-        steps.append({'name': 'pdr.job', 'status': 'FAILED', 'detail': f"tâche PDR '{bucket}' introuvable : copie initiale non lancée"})
+        steps.append({'name': 'pdr.job', 'status': 'FAILED', 'detail': f"PDR task '{bucket}' not found: initial copy not started"})
         return
     client.start_job(task['id'])
-    steps.append({'name': 'pdr.job', 'status': 'CHANGED', 'detail': f"copie initiale lancée (tâche id={task['id']}) ; {detail}"})
+    steps.append({'name': 'pdr.job', 'status': 'CHANGED', 'detail': f"initial copy started (task id={task['id']}); {detail}"})
 
 
 def run_replication(config, bucket, tenant, dry_run, noncurrent_days=None):
@@ -2249,19 +2249,19 @@ def run_replication(config, bucket, tenant, dry_run, noncurrent_days=None):
         ]
         if start_job and any(st['name'] == 'pdr.task' and st['detail'].startswith('created') for st in steps):
             _start_initial_job(config, cfg, bucket, steps)
-        message = (f'Simulation terminée pour {bucket} (aucune modification envoyée).' if dry_run
-                   else f'Réplication de {bucket} vers la partition PAG {tenant} mise en place.')
+        message = (f'Simulation finished for {bucket} (no change sent).' if dry_run
+                   else f'Replication of {bucket} to the PAG partition {tenant} set up.')
         if any(st['status'] == 'FAILED' for st in steps):
-            message = f'Réplication de {bucket} mise en place, mais la copie initiale n\'a pas démarré (voir le détail).'
+            message = f'Replication of {bucket} set up, but the initial copy did not start (see the detail).'
         return steps, message
 
     return _cos2pag_call(config, dry_run, work)
 
 
 TEARDOWN_MESSAGES = {
-    'suspend': ('suspendue', 'Suspension de la réplication de {bucket}'),
-    'undo': ('défaite (dépôt PAG conservé)', 'Réplication de {bucket} défaite, dépôt PAG conservé'),
-    'purge': ('défaite, dépôt PAG supprimé', 'Réplication de {bucket} défaite, dépôt PAG supprimé'),
+    'suspend': ('suspended', 'Suspension of the replication of {bucket}'),
+    'undo': ('undone (PAG repository kept)', 'Replication of {bucket} undone, PAG repository kept'),
+    'purge': ('undone, PAG repository deleted', 'Replication of {bucket} undone, PAG repository deleted'),
 }
 
 
@@ -2270,16 +2270,16 @@ def run_teardown(config, bucket, tenant, level, dry_run):
     def work(cfg, mods):
         modules = pag_teardown.load_modules()
         if modules is None:
-            raise mods.ConfigError("les clients de cos2pag ne sont pas importables")
+            raise mods.ConfigError('the cos2pag clients cannot be imported')
         steps = pag_teardown.teardown(modules, cfg, bucket, tenant, level, dry_run)
         done, label = TEARDOWN_MESSAGES[level]
         failed = [step['name'] for step in steps if step['status'] == 'FAILED']
         if failed:
-            message = f"{label.format(bucket=bucket)} interrompue : échec de l'étape {failed[0]}."
+            message = f"{label.format(bucket=bucket)} interrupted: step {failed[0]} failed."
         elif dry_run:
-            message = f'Simulation terminée pour {bucket} (aucune modification envoyée).'
+            message = f'Simulation finished for {bucket} (no change sent).'
         else:
-            message = f'Réplication de {bucket} {done}.'
+            message = f'Replication of {bucket} {done}.'
         return steps, message
 
     return _cos2pag_call(config, dry_run, work)
@@ -2322,11 +2322,11 @@ def replication_status(config, bucket):
     result = {'ok': False, 'message': '', 'pdr': None, 'lifecycle': None, 'log': ''}
     settings = replication_settings(config)
     if settings is None:
-        result['message'] = 'Réplication non configurée.'
+        result['message'] = 'Replication not configured.'
         return result
     mods, clients = _cos2pag(), _cos2pag_clients()
     if mods is None or clients is None:
-        result['message'] = "Le paquet cos2pag n'est pas installé."
+        result['message'] = 'The cos2pag package is not installed.'
         return result
     with _api_lock:
         try:
@@ -2351,15 +2351,15 @@ def replication_status(config, bucket):
                                    'readable': rules is not None}
             result['ok'] = True
         except FileNotFoundError as err:
-            result['message'] = f"Fichier introuvable : {err.filename or err}"
+            result['message'] = f"File not found: {err.filename or err}"
         except mods.ConfigError as err:
-            result['message'] = f'Configuration de cos2pag : {err}'
+            result['message'] = f'cos2pag configuration: {err}'
         except mods.ApiError as err:
-            result['message'] = f'Erreur de l\'API : {err}'
+            result['message'] = f'API error: {err}'
         except KeyError as err:
-            result['message'] = f'Configuration de cos2pag : clé manquante {err}'
+            result['message'] = f'cos2pag configuration: missing key {err}'
         except Exception as err:
-            result['message'] = f'{type(err).__name__} : {err}'
+            result['message'] = f'{type(err).__name__}: {err}'
     return result
 
 
@@ -2370,7 +2370,7 @@ def replication_partitions(config, tenant):
     def work(cfg, mods):
         modules = pag_teardown.load_modules()
         if modules is None:
-            raise mods.ConfigError('les clients de cos2pag ne sont pas importables')
+            raise mods.ConfigError('the cos2pag clients cannot be imported')
         held['names'] = sorted(pag_teardown.partition_names(modules, cfg), key=str.casefold)
         return [], ''
 
@@ -2383,39 +2383,39 @@ def replication_partitions(config, tenant):
 def handle_replication_partitions(config, body):
     tenant = _text(body, 'tenant')
     if tenant and not LABEL_RE.match(tenant):
-        return 400, {'error': 'Tenant PAG invalide (lettres, chiffres, . - et _ uniquement).'}
+        return 400, {'error': 'Invalid PAG tenant (letters, digits, . - and _ only).'}
     return 200, replication_partitions(config, tenant)
 
 
 def handle_replication_status(config, body):
     bucket = _existing_bucket(body)
     if not bucket:
-        return 400, {'error': 'Nom de bucket invalide.'}
+        return 400, {'error': 'Invalid bucket name.'}
     return 200, replication_status(config, bucket)
 
 
 def handle_teardown(config, body, dry_run):
     bucket = _existing_bucket(body)
     if not bucket:
-        return 400, {'error': 'Nom de bucket invalide.'}
+        return 400, {'error': 'Invalid bucket name.'}
     level = _text(body, 'level')
     if level not in pag_teardown.LEVELS:
-        return 400, {'error': 'Niveau invalide (suspend, undo ou purge).'}
+        return 400, {'error': 'Invalid level (suspend, undo or purge).'}
     tenant = _text(body, 'tenant')
     if (level == 'purge' or tenant) and not LABEL_RE.match(tenant):
-        return 400, {'error': 'Tenant PAG invalide (lettres, chiffres, . - et _ uniquement) ; il est requis pour supprimer le dépôt.'}
+        return 400, {'error': 'Invalid PAG tenant (letters, digits, . - and _ only); it is required to delete the repository.'}
     if not dry_run and level != 'suspend' and _text(body, 'confirm') != bucket:
-        return 400, {'error': 'Confirmation incorrecte : tape le nom exact du bucket.'}
+        return 400, {'error': 'Wrong confirmation: type the exact bucket name.'}
     return 200, run_teardown(config, bucket, tenant, level, dry_run)
 
 
 def handle_replication(config, body, dry_run):
     bucket = _existing_bucket(body)
     if not bucket:
-        return 400, {'error': 'Nom de bucket invalide.'}
+        return 400, {'error': 'Invalid bucket name.'}
     tenant = _text(body, 'tenant')
     if not LABEL_RE.match(tenant):
-        return 400, {'error': 'Tenant PAG invalide (lettres, chiffres, . - et _ uniquement).'}
+        return 400, {'error': 'Invalid PAG tenant (letters, digits, . - and _ only).'}
     days = None
     if _text(body, 'noncurrent_days'):
         try:
@@ -2423,7 +2423,7 @@ def handle_replication(config, body, dry_run):
         except ValueError:
             days = 0
         if not 1 <= days <= MAX_RETENTION_DAYS:
-            return 400, {'error': f'Rétention invalide (nombre entier de jours, entre 1 et {MAX_RETENTION_DAYS}).'}
+            return 400, {'error': f'Invalid retention (whole number of days, between 1 and {MAX_RETENTION_DAYS}).'}
     return 200, run_replication(config, bucket, tenant, dry_run, days)
 
 
@@ -2507,9 +2507,9 @@ class Handler(BaseHTTPRequestHandler):
             kind = (query.get('kind') or [''])[0]
             text = (query.get('q') or [''])[0].strip()
             if kind not in SEARCH_KINDS:
-                self._json(400, {'error': 'Type de recherche inconnu.'})
+                self._json(400, {'error': 'Unknown search type.'})
             elif not PATTERN_RE.match(text) or not text.strip('*,') or (',' in text and kind != 'tenant'):
-                self._json(400, {'error': 'Nom invalide (lettres, chiffres, . - _ et * uniquement ; la virgule sépare plusieurs tenants).'})
+                self._json(400, {'error': 'Invalid name (letters, digits, . - _ and * only; a comma separates several tenants).'})
             else:
                 self._json(200, search(self.config, kind, text))
         else:
@@ -2529,27 +2529,27 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {'error': 'not found'})
             return
         if self.headers.get('Content-Type', '').split(';')[0].strip() != 'application/json':
-            self._json(415, {'error': 'application/json attendu'})
+            self._json(415, {'error': 'application/json expected'})
             return
         try:
             length = int(self.headers.get('Content-Length', ''))
         except ValueError:
             length = -1
         if not 0 < length <= MAX_BODY:
-            self._json(400, {'error': 'Corps de requête invalide.'})
+            self._json(400, {'error': 'Invalid request body.'})
             return
         try:
             body = json.loads(self.rfile.read(length))
         except (json.JSONDecodeError, UnicodeDecodeError):
-            self._json(400, {'error': 'JSON invalide.'})
+            self._json(400, {'error': 'Invalid JSON.'})
             return
         if not isinstance(body, dict):
-            self._json(400, {'error': 'Requête invalide.'})
+            self._json(400, {'error': 'Invalid request.'})
             return
         try:
             status, obj = route(self.config, body)
         except KeyError as err:
-            status, obj = 400, {'error': f'config.json incomplet : clé manquante {err}.'}
+            status, obj = 400, {'error': f'config.json incomplete: missing key {err}.'}
         self._json(status, obj)
 
     def log_message(self, fmt, *args):
