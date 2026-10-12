@@ -128,3 +128,22 @@ def test_a_missing_ca_bundle_is_named(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     client, error = lifecycle._client({'api': {'base_url': 'https://x'}, 's3': {'endpoint_url': 'https://s3', 'ca_bundle_path': './s3-ca.pem'}}, 'sa-a-0001')
     assert client is None and str(tmp_path / 's3-ca.pem') in error and 'cos_ui.py was started' in error
+
+
+def test_access_denied_suggests_this_machines_address(monkeypatch):
+    from botocore.exceptions import ClientError
+
+    class Denied(FakeS3):
+        def get_bucket_lifecycle_configuration(self, Bucket):
+            raise ClientError({'Error': {'Code': 'AccessDenied', 'Message': 'Access Denied'}}, 'GetBucketLifecycleConfiguration')
+
+    monkeypatch.setattr(lifecycle, '_client', lambda config, account: (Denied([]), None))
+    monkeypatch.setattr(lifecycle, 'source_ip', lambda url: '10.1.2.3')
+    config = {'api': {'base_url': 'https://x'}, 's3': {'endpoint_url': 'https://s3.example.lu'}}
+    status, out = handle_lifecycle_get(config, BODY)
+    assert not out['ok'] and out['source_ip'] == '10.1.2.3' and 'likely 10.1.2.3' in out['message']
+
+
+def test_source_ip_is_a_local_address_and_never_raises():
+    assert lifecycle.source_ip('https://127.0.0.1') == '127.0.0.1'
+    assert lifecycle.source_ip('not a url') is None

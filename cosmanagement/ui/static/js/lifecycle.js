@@ -8,6 +8,20 @@ async function openLifecycle(account, bucket) {
   if (out.log) showLog(out.log);
   if (out.error || !out.ok) {
     box.append(el('div', 'Rules unavailable: ' + (out.error || out.message), 'empty'));
+    // Access denied by the bucket's firewall: offer to add this machine's address to the allowed IPs above.
+    if (out.source_ip) {
+      const add = el('button', 'Add ' + out.source_ip + ' to the allowed IPs above', 'small secondary');
+      add.type = 'button';
+      add.addEventListener('click', () => {
+        const ips = $('m-edit').querySelector('textarea');
+        // an empty list would not be "one more address": it would turn this one into the only allowed address
+        if (!ips || !ips.value.trim()) { setStatus('The allowed IPs above are not loaded or empty: add the address by hand.', true); return; }
+        if (!ips.value.split(/[\s,;]+/).includes(out.source_ip)) ips.value = ips.value.replace(/\s*$/, '') + '\n' + out.source_ip;
+        setStatus('Address added to the list above: click "Save" there, then reopen this bucket.', false);
+        ips.scrollIntoView({block: 'center'});
+      });
+      box.append(add);
+    }
     return;
   }
   box.append(el('div', 'Deletes objects of this bucket on COS, with no way back. With versioning on, expiring the current ' +

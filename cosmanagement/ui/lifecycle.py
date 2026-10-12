@@ -11,6 +11,8 @@ this page manages (ids below) are merged with the other rules of the bucket, whi
 """
 
 import os
+import socket
+from urllib.parse import urlparse
 
 from botocore.exceptions import BotoCoreError, ClientError, SSLError
 
@@ -144,6 +146,24 @@ def _client(config, account):
     return build_s3_client({**settings, 'access_key': cred['access_key_id'], 'secret_key': cred['secret_key']}), None
 
 
+def source_ip(url):
+    """The address this machine would use to reach `url` (nothing is sent), or None.
+
+    Behind a NAT the bucket's firewall sees another address, so this is only a likely candidate.
+    """
+    parsed = urlparse(url)
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect((parsed.hostname, parsed.port or (443 if parsed.scheme == 'https' else 80)))
+            return sock.getsockname()[0]
+    except (OSError, TypeError):
+        return None
+
+
+def _is_access_denied(err):
+    return isinstance(err, ClientError) and err.response.get('Error', {}).get('Code') in ('AccessDenied', 'Forbidden')
+
+
 def _s3_error(err):
     if isinstance(err, ClientError):
         error = err.response.get('Error', {})
@@ -171,6 +191,11 @@ def _run(config, body, work):
             out.update(work(client, bucket, get_bucket_lifecycle(client, bucket)))
         except (ClientError, BotoCoreError) as err:
             out.update(ok=False, message=_s3_error(err))
+            if _is_access_denied(err):
+                ip = source_ip(s3_settings(config)['server_url'])
+                out['source_ip'] = ip
+                out['message'] += ('. If the bucket has an IP allow list, this machine\'s address must be in it'
+                                   + (f' (likely {ip})' if ip else '') + '.')
 
     _, log, aborted = call_api(call)
     if aborted:
