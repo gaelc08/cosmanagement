@@ -50,7 +50,6 @@ from .buckets import (
 )
 from .bulk import handle_bulk_expand, handle_bulk_plan, handle_bulk_run
 from .common import MAX_BODY, PATTERN_RE, SEARCH_KINDS
-from .lifecycle import handle_lifecycle_get, handle_lifecycle_update
 from .replication import (
     handle_replication, handle_replication_partitions, handle_replication_status, handle_teardown, replication_settings,
 )
@@ -108,9 +107,6 @@ POST_ROUTES = {
     '/api/replication/status': handle_replication_status,
     '/api/replication/preview': lambda config, body: handle_replication(config, body, dry_run=True),
     '/api/replication/run': lambda config, body: handle_replication(config, body, dry_run=False),
-    '/api/lifecycle/get': handle_lifecycle_get,
-    '/api/lifecycle/preview': lambda config, body: handle_lifecycle_update(config, body, dry_run=True),
-    '/api/lifecycle/save': lambda config, body: handle_lifecycle_update(config, body, dry_run=False),
     '/api/bucket/create': handle_create_bucket,
     '/api/bucket/get': handle_get_bucket,
     '/api/bucket/update': handle_update_bucket,

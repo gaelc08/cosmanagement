@@ -4,10 +4,6 @@
     "ssl_verify": true,
     "ca_bundle_path": "./osiris-ca.pem"
   },
-  "s3": {
-    "endpoint_url": "https://s3.example.lu",
-    "_comment": "S3 endpoint of COS, used to edit lifecycle rules; ssl_verify and ca_bundle_path default to those of api"
-  },
   "storage_location_labels": {
     "-01": "interne",
     "-02": "externe S3"
