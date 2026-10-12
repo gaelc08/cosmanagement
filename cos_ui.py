@@ -42,6 +42,7 @@ import logging
 import re
 import sys
 import threading
+import time
 import types
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -757,7 +758,7 @@ PAGE = r"""<!doctype html>
       setStatus(out.error || out.message, !!out.error || !out.ok);
       if (out.steps && out.steps.length) {
         const states = STEP_STATE[dry ? 'preview' : 'run'];
-        result.append(table(['Étape', 'État', 'Détail'], out.steps.map(st => [st.name, {text: states[st.status] || st.status, cls: st.status === 'CHANGED' ? 'ok' : undefined}, st.detail])));
+        result.append(table(['Étape', 'État', 'Détail'], out.steps.map(st => [st.name, {text: states[st.status] || (st.status === 'FAILED' ? 'Échec' : st.status), cls: st.status === 'CHANGED' ? 'ok' : st.status === 'FAILED' ? 'fail' : undefined}, st.detail])));
       }
       if (dry && out.ok) { simulatedFor = key(); run.disabled = false; }
       else if (!dry && out.ok) { simulatedFor = null; refreshStatus(false); }
@@ -2162,6 +2163,69 @@ def _cos2pag_call(config, dry_run, work):
     return result
 
 
+JOB_WAIT_SECONDS = 60       # how long to wait for COS to let PDR's source credentials read the bucket
+JOB_WAIT_STEP = 5
+
+
+def job_wait_seconds(config):
+    """config.json "cos2pag": {"job_wait_seconds": N}: how long to wait for COS to honour the new ACL grant before the
+    first copy job is started (default 60, 0 to start at once)."""
+    value = (config.get('cos2pag') or {}).get('job_wait_seconds')
+    return value if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 3600 else JOB_WAIT_SECONDS
+
+
+def _is_access_denied(err):
+    response = getattr(err, 'response', None)
+    code = (response or {}).get('Error', {}).get('Code', '') if isinstance(response, dict) else ''
+    status = (response or {}).get('ResponseMetadata', {}).get('HTTPStatusCode') if isinstance(response, dict) else None
+    return code in ('AccessDenied', 'Forbidden', '403') or status == 403
+
+
+def wait_for_source_access(s3, bucket, wait, sleep=time.sleep, step=JOB_WAIT_STEP):
+    """List one object of `bucket` with the credentials PDR uses to read it, retrying while COS answers
+    AccessDenied for up to `wait` seconds. A grant added to the ACL seconds earlier is not always honoured at once.
+
+    Returns (ready, detail): ready is False only when access is still denied after the wait; any other failure
+    (network, TLS...) is not an access problem, so it does not block the job (ready True, with the reason).
+    """
+    waited = 0
+    while True:
+        try:
+            s3.list_objects_v2(Bucket=bucket, MaxKeys=1)
+            return True, f'lecture du bucket acceptée par COS après {waited} s' if waited else 'lecture du bucket acceptée par COS'
+        except Exception as err:   # botocore ClientError and anything else
+            if not _is_access_denied(err):
+                return True, f'accès non vérifié ({type(err).__name__} : {err})'
+            if waited >= wait:
+                return False, (f"COS refuse toujours (AccessDenied) la lecture du bucket avec les identifiants source de PDR après {waited} s. "
+                               "Ce n'est pas qu'une question de délai : vérifie que la clé d'accès de pdr.source_s3 appartient bien au compte "
+                               "accordé dans l'ACL (cos.backup_service_account.grantee) et que l'IP de PDR est dans la liste blanche du bucket. Une fois corrigé, lance une copie (Copy) de la tâche depuis PDR.")
+        sleep(step)
+        waited += step
+
+
+def _start_initial_job(config, cfg, bucket, steps):
+    """Start the first Copy job of a task cos2pag has just created, once COS lets PDR read the bucket.
+
+    cos2pag starts it itself right after patching the ACL, and PDR then failed with "Failed to enumerate objects:
+    Forbidden (AccessDenied)" although the grant was in place. Adds a `pdr.job` step to `steps`.
+    """
+    from cos2pag.s3_lifecycle_client import build_s3_client
+    mods = pag_teardown.load_modules()
+    pdr_cfg = cfg['pdr']
+    ready, detail = wait_for_source_access(build_s3_client(pdr_cfg['source_s3']), bucket, job_wait_seconds(config))
+    if not ready:
+        steps.append({'name': 'pdr.job', 'status': 'FAILED', 'detail': f"copie initiale non lancée : {detail}"})
+        return
+    client = mods.PdrClient(pdr_cfg['base_url'], pag_teardown._session(mods, pdr_cfg), timeout=pdr_cfg.get('timeout', 30))
+    task = client.find_task_by_alias(bucket)
+    if task is None or task.get('id') is None:
+        steps.append({'name': 'pdr.job', 'status': 'FAILED', 'detail': f"tâche PDR '{bucket}' introuvable : copie initiale non lancée"})
+        return
+    client.start_job(task['id'])
+    steps.append({'name': 'pdr.job', 'status': 'CHANGED', 'detail': f"copie initiale lancée (tâche id={task['id']}) ; {detail}"})
+
+
 def run_replication(config, bucket, tenant, dry_run, noncurrent_days=None):
     """Set up (or, with dry_run, preview) the replication of a bucket to PAG with cos2pag's sync_bucket.
 
@@ -2174,13 +2238,21 @@ def run_replication(config, bucket, tenant, dry_run, noncurrent_days=None):
     def work(cfg, mods):
         _check_partition(cfg, tenant)
         extra = {} if noncurrent_days is None else {'noncurrent_expiration_days': noncurrent_days}
+        # cos2pag would start the first copy job at once; we start it ourselves after checking that COS lets PDR read.
+        start_job = (cfg.get('pdr') or {}).get('auto_start_job', True) and not dry_run
+        if start_job:
+            cfg = {**cfg, 'pdr': {**cfg['pdr'], 'auto_start_job': False}}
         report = mods.sync_bucket(cfg, bucket, tenant, dry_run=dry_run, **extra)
         steps = [
             {'name': step.name, 'status': 'SKIPPED' if step.skipped else 'CHANGED' if step.changed else 'OK', 'detail': step.detail}
             for step in report.steps
         ]
+        if start_job and any(st['name'] == 'pdr.task' and st['detail'].startswith('created') for st in steps):
+            _start_initial_job(config, cfg, bucket, steps)
         message = (f'Simulation terminée pour {bucket} (aucune modification envoyée).' if dry_run
                    else f'Réplication de {bucket} vers la partition PAG {tenant} mise en place.')
+        if any(st['status'] == 'FAILED' for st in steps):
+            message = f'Réplication de {bucket} mise en place, mais la copie initiale n\'a pas démarré (voir le détail).'
         return steps, message
 
     return _cos2pag_call(config, dry_run, work)
