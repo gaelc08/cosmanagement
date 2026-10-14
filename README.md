@@ -124,24 +124,16 @@ pyproject.toml                  packaging (pip install . gives cos-ui, cos2pag a
      buckets to stdout. Add `--output buckets.json` to also write the
      result as `{"account-id": ["bucket1", "bucket2", ...]}`.
 
-### Docker (VM without internet)
-
-The UI has no authentication, so the container publishes its port on the host's `127.0.0.1` only (`docker-compose.yml`). `--bind 0.0.0.0` exists for this: it is the container's own interface, never expose it directly.
+### Docker
 
 ```sh
-# 1. On the laptop (has internet):
-scripts/build-image.sh        # writes dist/cosmanagement-image.tar.gz
-./update-manny.sh             # syncs the tree, image included
-
-# 2. On the VM, once: put config.json, .env, storage_locations.txt and the CA .pem in ./data/
-#    (paths in config.json are relative to /data, e.g. "./osiris-ca.pem"). Then:
-scripts/load-image.sh         # docker load + docker compose up -d (restart: unless-stopped)
-
-# 3. From home, over the VPN:
-ssh -L 8767:127.0.0.1:8767 <vm>   # then open http://127.0.0.1:8767/
+mkdir data   # config.json, .env, storage_locations.txt and the CA .pem go here (paths in config.json are relative to /data)
+docker compose up -d --build
 ```
 
-The VM must reach the COS API, and its IP may need to be in the allowed IPs. Logs: `docker logs cos-ui`.
+Then open http://127.0.0.1:8767/ . The port is published on the host's `127.0.0.1` only, because the UI has no authentication (`--bind 0.0.0.0` is the container's own interface, never expose it). Logs: `docker logs cos-ui`. On a remote host, reach it with `ssh -L 8767:127.0.0.1:8767 <host>`.
+
+The container uses the host's network route to the COS API: if your VPN is on, test from the container with `docker exec cos-ui python -c "import urllib.request as u;print(u.urlopen('<base_url>').status)"`. With Docker Desktop/WSL2 some VPN clients do not route container traffic; run `python3 cos_ui.py --port 8767` directly in that case.
 
 ### Web UI (`cos_ui.py`)
 A local web interface to manage IBM COS storage accounts, buckets and credentials. It is not tied to the Hive naming: accounts, buckets and their settings are whatever you type or load.
