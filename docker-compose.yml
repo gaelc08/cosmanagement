@@ -1,0 +1,13 @@
+services:
+  cos-ui:
+    image: cosmanagement:latest
+    build: .
+    container_name: cos-ui
+    restart: unless-stopped
+    # Loopback only: the UI has no authentication. Reach it with `ssh -L 8767:127.0.0.1:8767 <vm>`.
+    ports:
+      - "127.0.0.1:8767:8767"
+    volumes:
+      # config.json, hive.json, .env, storage_locations.txt and the CA bundle (./osiris-ca.pem) live here
+      - ./data:/data:ro
+    command: ["--env-file", "/data/.env", "--config", "/data/config.json", "--locations", "/data/storage_locations.txt"]

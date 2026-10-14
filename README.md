@@ -124,6 +124,25 @@ pyproject.toml                  packaging (pip install . gives cos-ui, cos2pag a
      buckets to stdout. Add `--output buckets.json` to also write the
      result as `{"account-id": ["bucket1", "bucket2", ...]}`.
 
+### Docker (VM without internet)
+
+The UI has no authentication, so the container publishes its port on the host's `127.0.0.1` only (`docker-compose.yml`). `--bind 0.0.0.0` exists for this: it is the container's own interface, never expose it directly.
+
+```sh
+# 1. On the laptop (has internet):
+scripts/build-image.sh        # writes dist/cosmanagement-image.tar.gz
+./update-manny.sh             # syncs the tree, image included
+
+# 2. On the VM, once: put config.json, .env, storage_locations.txt and the CA .pem in ./data/
+#    (paths in config.json are relative to /data, e.g. "./osiris-ca.pem"). Then:
+scripts/load-image.sh         # docker load + docker compose up -d (restart: unless-stopped)
+
+# 3. From home, over the VPN:
+ssh -L 8767:127.0.0.1:8767 <vm>   # then open http://127.0.0.1:8767/
+```
+
+The VM must reach the COS API, and its IP may need to be in the allowed IPs. Logs: `docker logs cos-ui`.
+
 ### Web UI (`cos_ui.py`)
 A local web interface to manage IBM COS storage accounts, buckets and credentials. It is not tied to the Hive naming: accounts, buckets and their settings are whatever you type or load.
 ```bash

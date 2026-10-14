@@ -16,3 +16,4 @@ config.yaml
 build/
 dist/
 .ruff_cache/
+data/

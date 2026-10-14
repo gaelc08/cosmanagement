@@ -249,9 +249,12 @@ def main():
                         help='Optional local list of storage locations (container vaults), one per line; '
                              'a pasted table works, only the first word starting with cv- is kept')
     parser.add_argument('--port', type=int, default=8765, help='Local port (default: 8765)')
+    parser.add_argument('--bind', default='127.0.0.1', metavar='ADDR',
+                        help='Address to listen on (default: 127.0.0.1). Only change it inside a container, '
+                             'and publish the port on the host\'s loopback only: the UI has no authentication.')
     parser.add_argument('--allow-host', action='append', default=[], metavar='HOST',
                         help='Also accept this Host header (machine name, tunnel or proxy name); repeatable. '
-                             'The server still only listens on 127.0.0.1.')
+                             'This does not change the address it listens on (see --bind).')
     parser.add_argument('--no-browser', action='store_true', help="Don't open the browser automatically")
     args = parser.parse_args()
 
@@ -262,7 +265,7 @@ def main():
         print(f'{len(Handler.locations)} storage location(s) read from {args.locations}')
     Handler.allowed_hosts = build_allowed_hosts(args.port, args.allow_host)
 
-    server = ThreadingHTTPServer(('127.0.0.1', args.port), Handler)
+    server = ThreadingHTTPServer((args.bind, args.port), Handler)
     url = f'http://127.0.0.1:{args.port}/'
     print(f'COS management UI on {url} (Ctrl+C to stop)')
     if not args.no_browser:
