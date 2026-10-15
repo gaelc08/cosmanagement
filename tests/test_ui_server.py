@@ -62,3 +62,12 @@ def test_info_reads_hive_settings_from_the_hive_key_and_keeps_them_out_of_the_su
     info = json.loads(get(server + '/api/info')[2])
     assert info['environments'] == ['dev', 'tst']
     assert info['storage_locations'] == ['cv-fina-01']
+
+
+def test_ip_hosts_are_only_accepted_when_listening_on_a_network_address():
+    allowed = build_allowed_hosts(8765)
+    assert not host_allowed('192.168.5.20:8765', allowed)
+    assert host_allowed('192.168.5.20:8765', allowed, allow_ip=True) and host_allowed('[fe80::1]:8765', allowed, allow_ip=True)
+    assert not host_allowed('evil.example.com:8765', allowed, allow_ip=True)       # a name (DNS rebinding) is still refused
+    assert not host_allowed('192.168.5.20.evil.com', allowed, allow_ip=True)
+    assert not host_allowed('192.168.5.20:abc', allowed, allow_ip=True)

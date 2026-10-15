@@ -34,6 +34,7 @@ never called by more than one request at once.
 """
 
 import argparse
+import ipaddress
 import json
 import sys
 import webbrowser
@@ -64,11 +65,21 @@ CSP = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'sel
 LOOPBACK_NAMES = {'127.0.0.1', 'localhost', '[::1]'}
 
 
-def host_allowed(value, allowed_hosts):
+def _is_ip(name):
+    try:
+        ipaddress.ip_address(name.strip('[]'))
+    except ValueError:
+        return False
+    return True
+
+
+def host_allowed(value, allowed_hosts, allow_ip=False):
     """Is this Host (or Origin host) one we serve? Loopback names with any port, or a name given with --allow-host.
 
     Any port is fine for loopback: through a port forward (VS Code Remote, ssh -L) the browser's local port
     differs from the server's. DNS rebinding goes through a domain name, which is still refused.
+    With `allow_ip` (the server listens on a network address, --host) an IP address is accepted too: a page
+    cannot make the browser send an IP it does not use in its own URL, so this does not open rebinding.
     """
     if value in allowed_hosts:
         return True
@@ -79,7 +90,8 @@ def host_allowed(value, allowed_hosts):
     else:
         name, sep, rest = value.partition(':')
         rest = sep + rest
-    return name in LOOPBACK_NAMES and (rest == '' or (rest.startswith(':') and rest[1:].isdigit()))
+    port_ok = rest == '' or (rest.startswith(':') and rest[1:].isdigit())
+    return port_ok and (name in LOOPBACK_NAMES or (allow_ip and _is_ip(name)))
 
 
 def build_allowed_hosts(port, extra=()):
@@ -124,6 +136,7 @@ class Handler(BaseHTTPRequestHandler):
     config = None
     locations = ()
     allowed_hosts = frozenset()
+    allow_ip_hosts = False
 
     def _send(self, status, body, content_type):
         payload = body.encode('utf-8')
@@ -156,7 +169,7 @@ class Handler(BaseHTTPRequestHandler):
     def _host_ok(self):
         # Refuse foreign Host headers so a web page can't reach this server via DNS rebinding.
         host = self.headers.get('Host', '')
-        if host_allowed(host, self.allowed_hosts):
+        if host_allowed(host, self.allowed_hosts, self.allow_ip_hosts):
             return True
         shown = host[:100]
         print(f'Refused a request whose Host header is {shown!r}. If you reach this page under that name '
@@ -205,7 +218,7 @@ class Handler(BaseHTTPRequestHandler):
         # Writes must come from this page: same-origin, and JSON (which a
         # cross-site form can't send without a CORS preflight we never allow).
         origin = self.headers.get('Origin')
-        if origin and not host_allowed(urlparse(origin).netloc, self.allowed_hosts):
+        if origin and not host_allowed(urlparse(origin).netloc, self.allowed_hosts, self.allow_ip_hosts):
             self._json(403, {'error': 'forbidden origin'})
             return
         route = POST_ROUTES.get(urlparse(self.path).path)
@@ -248,10 +261,14 @@ def main():
     parser.add_argument('--locations', default='storage_locations.txt',
                         help='Optional local list of storage locations (container vaults), one per line; '
                              'a pasted table works, only the first word starting with cv- is kept')
-    parser.add_argument('--port', type=int, default=8765, help='Local port (default: 8765)')
+    parser.add_argument('--host', default='127.0.0.1',
+                        help='Address to listen on (default: 127.0.0.1, this machine only). Another address makes the UI reachable '
+                             'from the network of that address, WITHOUT any authentication: use it only on a private network '
+                             '(VM in NAT or host-only mode). 0.0.0.0 listens on every interface.')
+    parser.add_argument('--port', type=int, default=8765, help='Port (default: 8765)')
     parser.add_argument('--allow-host', action='append', default=[], metavar='HOST',
                         help='Also accept this Host header (machine name, tunnel or proxy name); repeatable. '
-                             'The server still only listens on 127.0.0.1.')
+                             'IP addresses are accepted without it when --host is not 127.0.0.1.')
     parser.add_argument('--no-browser', action='store_true', help="Don't open the browser automatically")
     args = parser.parse_args()
 
@@ -261,9 +278,14 @@ def main():
     if Handler.locations:
         print(f'{len(Handler.locations)} storage location(s) read from {args.locations}')
     Handler.allowed_hosts = build_allowed_hosts(args.port, args.allow_host)
+    network = args.host not in ('127.0.0.1', 'localhost')
+    Handler.allow_ip_hosts = network
+    if network:
+        print(f'WARNING: listening on {args.host}: anyone who can reach this address can use the UI, which has no authentication '
+              'and holds the COS admin credentials. Keep it to a private network (VM in NAT or host-only mode).', file=sys.stderr)
 
-    server = ThreadingHTTPServer(('127.0.0.1', args.port), Handler)
-    url = f'http://127.0.0.1:{args.port}/'
+    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    url = f'http://{args.host if args.host != "0.0.0.0" else "<address of this machine>"}:{args.port}/'
     print(f'COS management UI on {url} (Ctrl+C to stop)')
     if not args.no_browser:
         webbrowser.open(url)

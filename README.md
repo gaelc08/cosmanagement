@@ -132,6 +132,15 @@ python3 cos_ui.py --port 9000 --no-browser
 ```
 It only listens on `127.0.0.1`, and refuses any request whose `Host` header is not `127.0.0.1` or `localhost` (on any port, so a port forward such as VS Code Remote or `ssh -L` that changes the local port works), as a protection against DNS rebinding. If the page answers `forbidden host: '<name>'` because you reach it under another name (machine name, tunnel, proxy), restart with `--allow-host <name>` (repeatable); the message and the console show the exact name to use. From `config.json` it only needs the `api` section (`base_url`, SSL settings); credentials come from `.env` / the environment / `secrets.json` as for `hive_management.py`.
 
+**Running it in the background on a VM.** `deploy/cos-ui.service` is a systemd *user* service (no root): copy it to `~/.config/systemd/user/`, adjust `WorkingDirectory`, then `systemctl --user daemon-reload && systemctl --user enable --now cos-ui` and `loginctl enable-linger $USER` so that it starts at boot without any login. Logs: `journalctl --user -u cos-ui -f`. After an update or a change of `config.json` / `hive.json`: `git pull && systemctl --user restart cos-ui`.
+
+**Reaching it from the host without a tunnel.** `--host ADDRESS` makes the UI listen on that address instead of `127.0.0.1` (IPv4; `0.0.0.0` means every interface). For a VM in VMware **NAT** (or host-only) mode, use the VM's address on that network (`ip -4 addr`, e.g. `192.168.x.y`) and open `http://192.168.x.y:8765` on the host; an IP address in the `Host` header is accepted when `--host` is not `127.0.0.1`, a domain name still needs `--allow-host`. The UI has **no authentication** and holds the COS admin credentials: do this only on a private network where the host and your own VMs are the only machines that can reach the VM, never in bridged mode or on a shared LAN. Open the port in the VM's firewall for that network only, for example on Fedora:
+```bash
+sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="192.168.x.0/24" port port="8765" protocol="tcp" accept'
+sudo firewall-cmd --reload
+```
+The VM's NAT address can change when its DHCP lease does; give it a fixed address (VMware's `vmnetdhcp.conf` or a static address in the VM) so that `--host` stays valid.
+
 Storage locations (container vaults) belong to a tenant, and their names cannot be read from the API (a bucket's `GET` only gives an internal id). Give the UI the list of your vaults in a local file, `storage_locations.txt` next to the script (or `--locations PATH`); it is git-ignored. You can paste the vault table as it comes, only the first word of each line that starts with `cv-` is kept:
 ```
 cv-acd-01     storage-pool   6.46 kB   2025-06-16 05:54:32 GMT

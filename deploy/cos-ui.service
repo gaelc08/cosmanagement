@@ -1,0 +1,18 @@
+# systemd user service for the web UI. Install:
+#   mkdir -p ~/.config/systemd/user && cp deploy/cos-ui.service ~/.config/systemd/user/
+#   (edit WorkingDirectory and --host below)
+#   systemctl --user daemon-reload && systemctl --user enable --now cos-ui
+#   loginctl enable-linger $USER          # start at boot, without any login
+[Unit]
+Description=COS management UI
+
+[Service]
+WorkingDirectory=%h/git/SBS/ibm-cos/cosmanagement
+# --host: the address of the VM on its NAT / host-only network (ip -4 addr), or 127.0.0.1 for this VM only.
+# The UI has no authentication: never use an address reachable from a shared network.
+ExecStart=/usr/bin/python3 -u cos_ui.py --no-browser --host 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
